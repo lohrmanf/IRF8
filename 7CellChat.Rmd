@@ -1,0 +1,210 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-02-09"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(CellChat)
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+library(pander)
+library(ComplexHeatmap)
+library(ggplotify)
+
+
+
+options(stringsAsFactors = FALSE)
+
+dir <- "Results/10CellChat"
+
+mac <- readRDS("Results/mac_filter_merge.RDS")
+
+mac.wt <- subset(x=mac, subset=Experiment2 == "WT")
+DefaultAssay(mac.wt) <- "RNA"
+mac.wt<- NormalizeData(mac.wt, normalization.method = "LogNormalize") 
+
+mac.irf <- subset(x=mac, subset=Experiment2 == "IRF8ko")
+DefaultAssay(mac.irf) <- "RNA"
+mac.irf<- NormalizeData(mac.irf, normalization.method = "LogNormalize") 
+
+
+mac$new_clusters <- factor(mac$new_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac) <- mac$new_clusters
+
+
+mac.wt$new_clusters <- factor(mac.wt$new_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac.wt) <- mac.wt$new_clusters
+
+
+mac.irf$new_clusters <- factor(mac.irf$new_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac.irf) <- mac.irf$new_clusters
+
+
+colors <- c(
+  "1" = "#E76F51",
+  "2" = "#E9C46A",
+  "3" = "#36BA98",
+  "4H" = "#03396c",
+  "4I" = "#005b96",
+  "4C" = "#6497b1",
+  "4R" = "#b3cde0"
+)
+
+levels(Idents(mac.wt))
+
+```
+
+#WT
+```{r}
+mac.wt <- AddMetaData(object = mac.wt, metadata = mac.wt@active.ident, col.name = 'active.ident')
+
+cellchat.wt <- createCellChat(object = mac.wt, group.by = "active.ident")
+
+CellChatDB <- CellChatDB.mouse 
+showDatabaseCategory(CellChatDB)
+dplyr::glimpse(CellChatDB$interaction)
+CellChatDB.use <- CellChatDB
+cellchat.wt@DB <- CellChatDB.use
+
+cellchat.wt <- subsetData(cellchat.wt) 
+
+cellchat.wt <- identifyOverExpressedGenes(cellchat.wt)
+cellchat.wt <- identifyOverExpressedInteractions(cellchat.wt)
+
+cellchat.wt <- computeCommunProb(cellchat.wt)
+cellchat.wt <- filterCommunication(cellchat.wt, min.cells = 10)
+cellchat.wt <- computeCommunProbPathway(cellchat.wt)
+cellchat.wt <- aggregateNet(cellchat.wt)
+groupSize <- as.numeric(table(cellchat.wt@idents))
+
+par(mfrow = c(1,1), xpd=TRUE)
+
+netVisual_circle(cellchat.wt@net$count,color.use =colors, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+#ggsave(paste0(dir, "/n_interactions.png"), height = 5, width = 5, dpi=600)
+netVisual_circle(cellchat.wt@net$weight, color.use =colors,vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+```
+
+#Irf8
+```{r}
+mac.irf <- subset(x=mac, subset=Experiment2=="IRF8ko")
+
+mac.irf <- AddMetaData(object = mac.irf, metadata = mac.irf@active.ident, col.name = 'active.ident')
+
+cellchat.irf <- createCellChat(object = mac.irf, group.by = "active.ident")
+
+CellChatDB <- CellChatDB.mouse 
+showDatabaseCategory(CellChatDB)
+dplyr::glimpse(CellChatDB$interaction)
+CellChatDB.use <- CellChatDB
+cellchat.irf@DB <- CellChatDB.use
+
+cellchat.irf <- subsetData(cellchat.irf) 
+
+cellchat.irf <- identifyOverExpressedGenes(cellchat.irf)
+cellchat.irf <- identifyOverExpressedInteractions(cellchat.irf)
+
+cellchat.irf <- computeCommunProb(cellchat.irf)
+cellchat.irf <- filterCommunication(cellchat.irf, min.cells = 10)
+cellchat.irf <- computeCommunProbPathway(cellchat.irf)
+cellchat.irf <- aggregateNet(cellchat.irf)
+groupSize <- as.numeric(table(cellchat.irf@idents))
+
+
+par(mfrow = c(1,1), xpd=TRUE)
+
+netVisual_circle(cellchat.irf@net$count,color.use =colors, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+
+netVisual_circle(cellchat.irf@net$weight, color.use =colors,vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+```
+
+
+#Heatmaps
+```{r}
+cellchat.wt <- netAnalysis_computeCentrality(cellchat.wt,slot.name = "netP")
+
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat.wt, signaling=c("TNF", "CCL", "CD45", "APP", "THBS", "MIF", "GDF", "TWEAK", "MHC-II", "VISFATIN", "TGFb", "NOTCH", "ICAM"), pattern = "outgoing", color.use =colors, color.heatmap = "YlOrRd", font.size = 12, font.size.title = 12, width = 8, height = 5)
+ht1
+
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat.wt, signaling=c("TNF", "CCL", "CD45", "APP", "THBS", "MIF", "GDF", "TWEAK", "MHC-II", "VISFATIN", "TGFb", "NOTCH", "ICAM"), pattern = "incoming", color.use =colors, color.heatmap = "YlOrRd",  font.size = 12, font.size.title = 12, width = 8, height = 5)
+ht2
+
+png(filename = paste0(dir, "/Heatmap_top13_wt.png"), width = 5500, height = 2000, res = 600)
+ht1 + ht2
+dev.off()
+```
+
+```{r}
+
+cellchat.irf <- netAnalysis_computeCentrality(cellchat.irf,slot.name = "netP")
+
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat.irf, signaling=c("TNF", "CD45", "APP", "MIF", "CCL", "GDF",  "MHC-II","TWEAK", "VISFATIN", "TGFb", "ICAM", "BST2", "GALECTIN"), pattern = "outgoing", color.use =colors, color.heatmap = "YlOrRd", font.size = 12, font.size.title = 12, width = 8, height = 5)
+ht1
+
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat.irf, signaling=c("TNF", "CD45", "APP", "MIF", "CCL", "GDF",  "MHC-II","TWEAK", "VISFATIN", "TGFb", "ICAM", "BST2", "GALECTIN"), pattern = "incoming", color.use =colors, color.heatmap = "YlOrRd",  font.size = 12, font.size.title = 12, width = 8, height = 5)
+ht2
+
+png(filename = paste0(dir, "/Heatmap_top13_irf.png"), width = 5500, height = 2000, res = 600)
+ht1 + ht2
+dev.off()
+
+```
+
+#chord diagrams
+```{r}
+plot_and_save_signaling <- function(cellchat_obj, pw, colors) {
+  # Ensure the output directory exists
+  output_dir <- "Results/10CellChat/WT/"
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  # Loop over each signaling term in the provided list
+  for (signaling in pw) {
+    cat("Processing signaling:", signaling, "\n")
+
+    # Check if the signaling pathway exists in the cellchat object
+    if (!(signaling %in% cellchat_obj@netP$pathways)) {
+      cat("Warning: Pathway", signaling, "not found in cellchat object.\n")
+    } else {
+      # Generate the signaling network plot for the valid pathways
+      plot <- netVisual_aggregate(
+        cellchat_obj, 
+        color.use = colors,      
+        signaling = signaling,      
+        layout = "chord", 
+        vertex.label.cex = 9
+      )
+
+      # Define the file name for saving the plot
+      file_name <- paste0(output_dir, signaling, "_wt.png")
+      
+      # Save the plot as a PNG file
+      png(file = file_name, width = 1800, height = 1800)
+      print(plot)
+      dev.off()
+
+      cat("Saved plot for", signaling, "to", file_name, "\n")
+    }
+  }
+}
+
+```
+
+```{r}
+pw <- cellchat.wt@netP$pathways
+
+plot_and_save_signaling(cellchat.wt, pw, colors)
+```
+

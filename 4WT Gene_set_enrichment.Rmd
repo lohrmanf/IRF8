@@ -1,0 +1,299 @@
+---
+title: "Gene set enrichment"
+output: html_document
+date: '2022-09-28'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(presto)
+library(reshape2)
+library(pheatmap)
+library(gridExtra)
+library(RColorBrewer)
+library(openxlsx)
+
+dir <- "Results/gene set enrichment/WT"
+dir.g <- "Results/gene set enrichment/WT/gse_files"
+```
+
+#initial setup
+```{r setup, include=FALSE}
+mac <- readRDS("Results/mac_filter_merge.RDS")
+
+mac.wt <- subset(x=mac, subset=Experiment2 == "WT")
+DefaultAssay(mac.wt) <- "RNA"
+mac.wt<- NormalizeData(mac.wt, normalization.method = "LogNormalize") 
+
+mac$new_clusters <- factor(mac$new_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac) <- mac$new_clusters
+
+
+mac.wt$new_clusters <- factor(mac.wt$new_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac.wt) <- mac.wt$new_clusters
+
+p_value <- 0.05
+
+colors <- c(
+  "1" = "#E76F51",
+  "2" = "#E9C46A",
+  "3" = "#36BA98",
+  "4H" = "#03396c",
+  "4I" = "#005b96",
+  "4C" = "#6497b1",
+  "4R" = "#b3cde0"
+)
+
+levels(Idents(mac.wt))
+```
+
+
+```{r setup, include=FALSE}
+cl1.wt.markers <- FindMarkers(mac.wt, ident.1 = 1, min.pct = 0.25, logfc.threshold = 0.25)
+
+cl2.wt.markers <- FindMarkers(mac.wt, ident.1 = 2, min.pct = 0.25, logfc.threshold = 0.25)
+
+cl3.wt.markers <- FindMarkers(mac.wt, ident.1 = 3, min.pct = 0.25, logfc.threshold = 0.25)
+
+cl4H.wt.markers <- FindMarkers(mac.wt, ident.1 = "4H", min.pct = 0.25, logfc.threshold = 0.25)
+
+cl4I.wt.markers <- FindMarkers(mac.wt, ident.1 = "4I", min.pct = 0.25, logfc.threshold = 0.25)
+
+cl4C.wt.markers <- FindMarkers(mac.wt, ident.1 = "4C", min.pct = 0.25, logfc.threshold = 0.25)
+
+cl4R.wt.markers <- FindMarkers(mac.wt, ident.1 = "4R", min.pct = 0.25, logfc.threshold = 0.25)
+
+saveRDS(cl1.wt.markers, paste0(dir,"/cl1.RDS"))
+saveRDS(cl2.wt.markers, paste0(dir,"/cl2.RDS"))
+saveRDS(cl3.wt.markers, paste0(dir,"/cl3.RDS"))
+saveRDS(cl4H.wt.markers, paste0(dir,"/cl4H.RDS"))
+saveRDS(cl4I.wt.markers, paste0(dir,"/cl4I.RDS"))
+saveRDS(cl4C.wt.markers, paste0(dir,"/cl4C.RDS"))
+saveRDS(cl4R.wt.markers, paste0(dir,"/cl4R.RDS"))
+```
+
+#load DEGs
+```{r}
+cl1.wt.markers <- readRDS("Results/gene set enrichment/WT/cl1.RDS")
+cl2.wt.markers <- readRDS("Results/gene set enrichment/WT/cl2.RDS")
+cl3.wt.markers <- readRDS("Results/gene set enrichment/WT/cl3.RDS")
+cl4H.wt.markers <- readRDS("Results/gene set enrichment/WT/cl4H.RDS")
+cl4I.wt.markers <- readRDS("Results/gene set enrichment/WT/cl4I.RDS")
+cl4C.wt.markers <- readRDS("Results/gene set enrichment/WT/cl4C.RDS")
+cl4R.wt.markers <- readRDS("Results/gene set enrichment/WT/cl4R.RDS")
+
+```
+
+
+# make a heatmap for all clusters
+#first, save all simplified terms and terms as separate files
+```{r}
+clusters <- c("1", "2", "3", "4H", "4I", "4C", "4R")
+
+set.seed(1)
+
+for (cl in clusters) {
+  # FindMarkers result for the current cluster
+  cluster_markers <- get(paste0("cl", cl, ".wt.markers"))
+  
+  # Convert SYMBOL to ENTREZID
+  eg <- bitr(
+    rownames(cluster_markers),
+    fromType = "SYMBOL",
+    toType = "ENTREZID",
+    OrgDb = "org.Mm.eg.db"
+  )
+  eg <- subset(eg, !duplicated(eg$SYMBOL))
+  rownames(eg) <- eg$SYMBOL
+  eg$SYMBOL <- NULL
+  
+  # Merge with differential expression results
+  diffexpgenes <- merge(cluster_markers, eg, by = "row.names")
+  rownames(diffexpgenes) <- diffexpgenes$Row.names
+  diffexpgenes$Row.names <- NULL
+  
+  # Create the sorted gene list for GSEA
+  fc <- diffexpgenes$avg_log2FC
+  names(fc) <- diffexpgenes$ENTREZID
+  fc <- sort(fc, decreasing = TRUE)
+  
+  # Perform GSEA
+  gse <- gseGO(
+    geneList = fc,
+    minGSSize = 5,
+    maxGSSize = 800,
+    OrgDb = "org.Mm.eg.db",
+    seed = 1
+  )
+  
+  # Save GSEA results to CSV
+  write.csv2(
+    gse@result,
+    file = paste0(dir.g, "/gsea_cluster", cl, "_wt.csv")
+  )
+  
+  # Simplify GSEA results to reduce redundancy
+  gse_simplified <- clusterProfiler::simplify(
+    gse, 
+    cutoff = 0.7,  # Adjust the similarity cutoff as needed
+    by = "p.adjust",  # Use p.adjust values for simplification
+    select_fun = min
+  )
+  
+  # Sort simplified GSEA results by EnrichmentScore
+  simplified_results <- gse_simplified@result
+  sorted_results <- simplified_results[order(-simplified_results$enrichmentScore), ]  # Sort in descending order
+  
+  # Save sorted simplified GSEA results to CSV
+  write.csv2(
+    sorted_results,
+    file = paste0(dir.g, "/gsea_cluster", cl, "_wt_simplified_sorted.csv")
+  )
+}
+
+
+```
+
+#combine all into one file
+```{r}
+clusters <- c("1", "2", "3", "4H", "4I", "4C", "4R")
+
+results <- list()
+
+# Read and process results
+for (cl in clusters) {
+  gsea_file <- paste0(dir.g, "/gsea_cluster", cl, "_wt.csv")
+  res <- read.csv2(gsea_file)
+  res$Cluster <- paste0("Cluster_", cl)
+  
+  # Directly index the list using the cluster name
+  results[[cl]] <- res
+}
+
+# Combine all results
+combined_results <- do.call(rbind, results[clusters])
+
+# Sort by Cluster and then by NES within each cluster
+combined_results <- combined_results[order(combined_results$Cluster, -combined_results$NES), ]
+
+selected_cols <- combined_results[, c("ID", "Description", "NES", "Cluster")]
+View(selected_cols)
+
+write.csv2(
+  combined_results,
+  file = paste0(dir.g, "/Supp_table_3_gsea_cluster_wt_sorted.csv"), row.names = F
+)
+
+
+write.xlsx(
+  combined_results,
+  file = paste0(dir.g, "/Supp_table_3_gsea_cluster_wt_sorted.xlsx")
+)
+
+```
+
+# Filter for manually selected GO terms
+```{r}
+selected_go_terms <- c(
+ #1 
+  "GO:0019882",
+"GO:0034340",
+"GO:0009615",
+"GO:0045087",
+"GO:0034097",
+
+#2
+"GO:0050870",
+"GO:0019882",
+"GO:0007159",
+
+#3
+"GO:0008347",
+"GO:0048870",
+"GO:0048856",
+
+#4H
+"GO:0048469", 	
+"GO:0071695", 
+#4I
+"GO:0002237",
+"GO:0006954",
+"GO:0002218",
+"GO:0001816",
+#4C
+"GO:0001894",
+"GO:0045453",
+"GO:0050818",
+#4R
+"GO:0006119",
+"GO:0006958",
+"GO:0034440"
+)
+ 
+
+selected_go_terms <- unique(selected_go_terms)
+```
+
+#create heatmap
+```{r}
+clusters <- c("1", "2", "3", "4H", "4I", "4C", "4R")
+
+# Filter results for selected GO terms
+filtered_results <- combined_results[combined_results$ID %in% selected_go_terms, ]
+
+# Capitalize first letter of Description values
+capitalize_first_letter <- function(term) {
+  sapply(term, function(x) paste0(toupper(substring(x, 1, 1)), substring(x, 2)))
+}
+filtered_results$Description <- capitalize_first_letter(filtered_results$Description)
+
+# Ensure 'Description' is a factor with levels corresponding to selected_go_terms
+filtered_results$ID <- factor(filtered_results$ID, levels = selected_go_terms)
+id_to_description <- unique(filtered_results[, c("ID", "Description")])
+filtered_results$Description <- factor(filtered_results$Description, 
+  levels = id_to_description$Description[match(selected_go_terms, id_to_description$ID)])
+
+# Force the Cluster column to follow the desired order
+filtered_results$Cluster <- factor(filtered_results$Cluster, 
+                                   levels = paste0("Cluster_", clusters))
+
+# Reorder the heatmap data according to the selected GO terms order
+heatmap_data <- dcast(filtered_results, Description ~ Cluster, value.var = "NES")
+
+# Optionally, set the rownames based on Description and remove the Description column
+rownames(heatmap_data) <- heatmap_data$Description
+heatmap_data <- heatmap_data[, -1]
+
+# Change column names if desired (e.g., "Cluster_1" becomes "Cluster 1")
+colnames(heatmap_data) <- gsub("Cluster_", "Cluster ", colnames(heatmap_data))
+
+# Define the color palette
+color_palette <- rev(colorRampPalette(brewer.pal(11, "RdYlBu"))(100))
+
+# Generate the heatmap and save it to file
+png(filename = paste0(dir, "/GO_Term_Heatmap.png"), width = 6, height = 6, units = "in", res = 600)
+pheatmap(heatmap_data,
+         cluster_rows = FALSE,       
+         cluster_cols = FALSE,       
+         color = color_palette,      
+         main = "",
+         fontsize = 10,
+         labels_col = colnames(heatmap_data))
+dev.off()
+
+
+```
+
+
+
