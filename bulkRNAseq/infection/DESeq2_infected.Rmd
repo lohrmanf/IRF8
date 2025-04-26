@@ -1,0 +1,728 @@
+---
+title: "Deseq2"
+output: html_document
+date: "2024-05-07"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(DESeq2)
+library(tidyverse)
+library(pheatmap)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(apeglm)
+library(stats)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(DOSE)
+library(AnnotationDbi)
+library(GO.db)
+library(tools)
+
+dir <- "Results"
+dir.deg <- "Results/DEG"
+dir.nc <- "Results/NC"
+dir.vo <- "Results/Volcanos"
+dir.gse <- "Results/GSEA"
+dir.hm <- "Results/Heatmaps"
+
+conditions_original <- c()
+conditions_order <- c("Res","BM","Res_BCG","BM_BCG", "BM_hiBCG")
+custom_labels <- c(expression(Res),
+                   expression(BM),
+                   expression(Res-BCG),
+                   expression(BM-BCG),
+                   expression(BM-BCG^hi))
+custom_colors <- c("#3399FF", "#003399", "#FFFF00", "#FF9900", "#8B0000")
+names(custom_colors) <- conditions_order
+
+dds_n <- readRDS("dds_n.rds")
+
+normalized_counts <- read.csv(paste0(dir, "/normalized_counts.csv"), row.names=1)
+head(normalized_counts)
+```
+
+
+#create deseq object
+```{r}
+df <- read_tsv("raw_counts.tsv")
+
+df <- df[!duplicated(df$gene), ]
+
+#remove genes:
+non_functional_patterns <- c("^Gm", "...Rik$", "^RP", "^ERCC-", "^MIR", "^LINC", "^SNORD", "^mt-", "^NA")
+df <- df[!grepl(paste(non_functional_patterns, collapse="|"), df$gene), ]
+
+countData <- as.data.frame(df[, 3:17])
+
+rownames(countData)<- df$gene
+
+#conditions <- rep(conditions_order, each=3)
+coldata = data.frame(row.names = c('Res1', 'Res2', 'Res3', 'BM1', 'BM2', 'BM3', 'Res_BCG1', 'Res_BCG2', 'Res_BCG3', 'BM_BCG1', 'BM_BCG2', 'BM_BCG3','BM_hiBCG1', 'BM_hiBCG2', 'BM_hiBCG3' ), group = rep(c("Res","BM","Res_BCG","BM_BCG", "BM_hiBCG"), 1, each = 3))
+
+colData <- data.frame(condition = coldata$group)
+
+# Convert to DESeq2
+dds <- DESeqDataSetFromMatrix(countData = countData,
+                              colData = colData,
+                              design = ~ condition)
+
+#normalization
+dds_n <- DESeq(dds)
+
+summary(results(dds_n))
+plotDispEsts(dds_n)
+
+saveRDS(dds_n, file = "dds_n.rds")
+
+```
+
+
+#normalized counts
+```{r}
+
+
+conditions <- colData(dds_n)$condition
+
+unique_conditions <- unlist(sapply(unique(conditions), function(cond) {
+    paste(cond, 1:sum(conditions == cond), sep = "-")
+}))
+
+normalized_counts <- counts(dds_n, normalized = TRUE)
+
+colnames(normalized_counts) <- unique_conditions
+
+write.csv(normalized_counts, paste0(dir, "/normalized_counts.csv"))
+```
+
+
+#plots for normalized counts
+```{r}
+plot_gene_expression <- function(genes, normalized_counts) {
+  
+  for (gene_of_interest in genes) {
+    
+    gene_counts <- normalized_counts[gene_of_interest, ]
+    
+    plot_data <- data.frame(Condition = rep(colData$condition, each = length(gene_counts) / length(colData$condition)),
+      Replicate = factor(rep(1:3, length(gene_counts) / 3)),
+      Counts = gene_counts)
+    
+    plot_data$Condition <- factor(plot_data$Condition, levels = conditions_order)
+    
+    mean_counts <- plot_data %>%
+      group_by(Condition) %>%
+      summarise(MeanCounts = mean(Counts))
+    
+    p <- ggplot() +
+      geom_bar(data = mean_counts, aes(x = Condition, y = MeanCounts), stat = "identity", position = position_dodge(), fill = NA, color = "black") +
+      geom_point(data = plot_data, aes(x = Condition, y = Counts, color = Condition), position = position_jitterdodge(dodge.width = 0.8), size = 3) +
+      scale_color_manual(values = custom_colors) +
+      scale_x_discrete(labels = custom_labels) +
+      labs(title = bquote(italic(.(gene_of_interest))), x="", y = "Normalized Counts") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position="none")
+    
+    ggsave(paste0(dir.nc, "/", gene_of_interest, ".png"), plot = p, height = 3, width = 2, dpi = 600)
+  }
+}
+```
+
+
+```{r}
+genes <- c("Prdm1", "Irf4", "Nos2", "Arg1", "Il1b", "Il6", "Ifngr1", "Ifnar1", "Tnf", "Tlr4", "Nlrp3", "Il12a", "Ly6c2", "Csf2rb", "Cd74", "Ccr2", "Il10", "Cd4", "Enpp2", "Lyve1", "Mrc1")
+plot_gene_expression(genes, normalized_counts)
+```
+
+
+#DEG - single comparisons
+```{r}
+#dds_n <- readRDS("dds_n.rds")
+resultsNames(dds_n)
+
+#condition_BM_BCG_vs_BM
+res <- results(dds_n, name="condition_BM_BCG_vs_BM")
+shrink <- lfcShrink(dds_n, coef="condition_BM_BCG_vs_BM", type="apeglm")
+saveRDS(shrink, paste0(dir.deg, "/BM_BCG_vs_BM.rds"))
+signif <- shrink[!is.na(shrink$padj) & shrink$padj < 0.05, ]
+write.csv(signif, file = paste0(dir.deg, "/condition_BM_BCG_vs_BM.csv"))
+
+res <- results(dds_n, name="condition_Res_vs_BM")
+shrink <- lfcShrink(dds_n, coef="condition_Res_vs_BM", type="apeglm")
+saveRDS(shrink, paste0(dir.deg, "/Res_vs_BM.rds"))
+signif <- shrink[!is.na(shrink$padj) & shrink$padj < 0.05, ]
+write.csv(signif, file = paste0(dir.deg, "/condition_Res_vs_BM.csv"))
+
+
+
+dds_n$condition <- relevel(dds_n$condition, ref="BM_BCG")
+dds_n <- DESeq(dds_n)
+resultsNames(dds_n)
+
+#condition_Res_BCG_vs_BM_BCG
+res <- results(dds_n, name="condition_Res_BCG_vs_BM_BCG")
+shrink <- lfcShrink(dds_n, coef="condition_Res_BCG_vs_BM_BCG", type="apeglm")
+saveRDS(shrink, paste0(dir.deg, "/Res_BCG_vs_BM_BCG.rds"))
+signif <- shrink[!is.na(shrink$padj) & shrink$padj < 0.05, ]
+write.csv(signif, file = paste0(dir.deg, "/condition_Res_BCG_vs_BM_BCG.csv"))
+
+#condition_BM_hiBCG_vs_BM_BCG
+res <- results(dds_n, name="condition_BM_hiBCG_vs_BM_BCG")
+shrink <- lfcShrink(dds_n, coef="condition_BM_hiBCG_vs_BM_BCG", type="apeglm")
+saveRDS(shrink, paste0(dir.deg, "/BM_hiBCG_vs_BM_BCG.rds"))
+signif <- shrink[!is.na(shrink$padj) & shrink$padj < 0.05, ]
+write.csv(signif, file = paste0(dir.deg, "/condition_BM_hiBCG_vs_BM_BCG.csv"))
+
+
+dds_n$condition <- relevel(dds_n$condition, ref="Res")
+dds_n <- DESeq(dds_n)
+resultsNames(dds_n)
+
+#condition_Res_BCG_vs_Res
+res <- results(dds_n, name="condition_Res_BCG_vs_Res")
+shrink <- lfcShrink(dds_n, coef="condition_Res_BCG_vs_Res", type="apeglm")
+saveRDS(shrink, paste0(dir.deg, "/Res_BCG_vs_Res.rds"))
+signif <- shrink[!is.na(shrink$padj) & shrink$padj < 0.05, ]
+write.csv(signif, file = paste0(dir.deg, "/condition_Res_BCG_vs_Res.csv"))
+```
+
+#heatmaps from GO terms
+
+```{r}
+createHeatmapGO <- function(go_id, condition_prefixes, custom_labels) {
+    genes_oi <- AnnotationDbi::select(org.Mm.eg.db, 
+                                      keys = go_id, 
+                                      columns = c("SYMBOL", "GENENAME"), 
+                                      keytype = "GO")
+    valid_genes <- genes_oi$SYMBOL[genes_oi$SYMBOL %in% rownames(normalized_counts)]
+    valid_genes <- unique(valid_genes)
+    
+    if (length(valid_genes) == 0) {
+        message("No valid genes found for GO term: ", go_id)
+        return(NULL)
+    }
+    
+    selected_conditions <- grep(paste0("^", paste(condition_prefixes, collapse = "|"), "-\\d+$"), colnames(normalized_counts), value = TRUE)
+    
+    go_term_name <- Term(GOTERM[[go_id]])
+    go_term_name <- tools::toTitleCase(go_term_name)
+    sub <- normalized_counts[valid_genes, selected_conditions]
+    sub_z <- t(scale(t(sub)))
+    sub_z <- sub_z[!rowSums(is.na(sub_z) | is.nan(sub_z)) > 0, ]
+    
+    # Order genes based on the mean expression of the first three columns
+    mean_expression <- rowMeans(sub_z[, 10:12])
+    ordered_indices <- order(mean_expression, decreasing = FALSE)
+    sub_z <- sub_z[ordered_indices, ]
+    
+    # Determine image size based on the number of rows
+    n_rows <- nrow(sub_z)
+    height <- 800
+    width <- 120 + ncol(sub_z) * 11
+    
+    # Determine which labels to show based on the number of rows
+    row_labels <- rownames(sub_z)
+    if (n_rows > 45) {
+        skip_count <- ceiling(n_rows / 45)
+        for (i in 1:n_rows) {
+            if ((i - 1) %% skip_count != 0) {
+                row_labels[i] <- ""
+            }
+        }
+    }
+    
+    # Convert row labels to italicized expressions
+    row_labels <- sapply(row_labels, function(label) {
+        if (label != "") parse(text = paste0("italic('", label, "')")) else label
+    })
+    
+    # Create column labels
+    col_labels <- rep("", length(selected_conditions))
+    for (i in seq_along(custom_labels)) {
+        start_idx <- (i - 1) * 3 + 1
+        mid_idx <- start_idx + 1
+        col_labels[mid_idx] <- custom_labels[i]
+    }
+    
+    prefix_string <- paste(condition_prefixes, collapse = "_")
+    filename_string <- gsub("[:/]", "_", paste(go_term_name, prefix_string, sep = "_"))
+    
+    png(paste0(dir.hm, "/", filename_string, ".png"), width = width, height = height)
+    
+    hm <- Heatmap(sub_z, 
+                  heatmap_legend_param = list(title = "Z-score",
+                                               title_gp = gpar(fontsize = 18),
+                                               labels_gp = gpar(fontsize = 14),
+                                               legend_direction = "horizontal"),
+                  cluster_rows = FALSE, cluster_columns = FALSE, 
+                  row_labels = row_labels,
+                  row_names_gp = gpar(fontsize = 18),  # Italics apply through parsed expressions
+                  column_labels = col_labels,
+                  col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(100),
+                  column_title = "",
+                  column_names_rot = 90,
+                  column_names_gp = gpar(fontsize = 18),
+                  column_title_gp = gpar(fontsize = 18))
+    draw(hm, heatmap_legend_side = "bottom")
+    dev.off()
+}
+
+```
+
+
+
+```{r}
+GO.list <- c("GO:0050982", "GO:0006955", "GO:0007229", "GO:0085029", "GO:0007160", "GO:0019221", "GO:0070098", "GO:0005126", "GO:0008203", "GO:0042632", "GO:0001666", "GO:0071456", "GO:0002367", "GO:0042742", "GO:0006096")
+
+for (go_id in GO.list) {
+    createHeatmapGO(go_id, conditions_order, custom_labels)
+}
+
+```
+
+#create manual heatmap for main figure
+```{r}
+#Defense response to bacterium: GO:0042742
+#Cholesterol homeostasis: GO:0042632
+
+genes_oi <- AnnotationDbi::select(org.Mm.eg.db, 
+                                      keys = "GO:0042742", 
+                                      columns = c("SYMBOL", "GENENAME"), 
+                                      keytype = "GO")
+
+valid_genes <- genes_oi$SYMBOL[genes_oi$SYMBOL %in% rownames(normalized_counts)]
+
+valid_genes <- unique(valid_genes)
+    
+go_term_name <- Term(GOTERM[["GO:0042742"]])
+go_term_name <- tools::toTitleCase(go_term_name)
+sub <- normalized_counts[valid_genes, ]
+sub_z <- t(scale(t(sub)))
+sub_z <- sub_z[!rowSums(is.na(sub_z) | is.nan(sub_z)) > 0, ]
+    
+# Order genes based on the mean expression of the first three columns
+mean_expression <- rowMeans(sub_z[, 10:12])
+ordered_indices <- order(mean_expression, decreasing = FALSE)
+sub_z <- sub_z[ordered_indices, ]
+
+genes_in_term <- row.names(sub_z)
+
+selected_genes <- c("Il10", "Ifng", "Ifnb1", "Ifna1", "Irf8", "Fpr2","Notch2", "Tnf", "Tlr4","Nod2") 
+# Initialize a vector of empty strings for row labels
+row_labels <- rep("", nrow(sub_z))
+
+# Match the selected genes to rownames(sub_z) and get their indices
+matching_indices <- match(selected_genes, rownames(sub_z))
+
+# Assign the selected gene names to the appropriate positions
+row_labels[matching_indices] <- selected_genes
+
+# Convert row labels to italicized expressions
+row_labels <- sapply(row_labels, function(label) {
+        if (label != "") parse(text = paste0("italic('", label, "')")) else label
+    })
+
+#define col labels
+label_positions <- c(2, 5, 8, 11, 14)
+
+col_labels <- rep("", ncol(sub_z))
+
+col_labels[label_positions] <- custom_labels
+
+#create heatmap
+png(paste0(dir.hm, "/Defense response to bacterium.png"), width = 270, height = 700)
+    
+column_split <- rep(1:5, each = 3)  
+
+# Create the heatmap with column slices and gaps
+hm <- Heatmap(sub_z,
+              heatmap_legend_param = list(title = "Z-score",
+                                           title_gp = gpar(fontsize = 18),
+                                           labels_gp = gpar(fontsize = 14),
+                                           legend_direction = "horizontal"),
+              cluster_rows = FALSE, cluster_columns = FALSE,
+              row_labels = row_labels,
+              row_names_gp = gpar(fontsize = 18),
+              column_labels = col_labels,
+              col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(100),
+              column_title = NULL,
+              column_names_rot = 90,
+              column_names_gp = gpar(fontsize = 18),
+              column_title_gp = gpar(fontsize = 18),
+              column_split = column_split,  
+              column_gap = unit(2, "mm"))
+
+draw(hm, heatmap_legend_side = "bottom")
+
+dev.off()
+
+```
+
+```{r}
+#Cholesterol homeostasis: GO:0042632
+
+genes_oi <- AnnotationDbi::select(org.Mm.eg.db, 
+                                      keys = "GO:0042632", 
+                                      columns = c("SYMBOL", "GENENAME"), 
+                                      keytype = "GO")
+
+valid_genes <- genes_oi$SYMBOL[genes_oi$SYMBOL %in% rownames(normalized_counts)]
+
+valid_genes <- unique(valid_genes)
+    
+go_term_name <- Term(GOTERM[["GO:0042632"]])
+go_term_name <- tools::toTitleCase(go_term_name)
+sub <- normalized_counts[valid_genes, ]
+sub_z <- t(scale(t(sub)))
+sub_z <- sub_z[!rowSums(is.na(sub_z) | is.nan(sub_z)) > 0, ]
+    
+# Order genes based on the mean expression of the first three columns
+mean_expression <- rowMeans(sub_z[, 10:12])
+ordered_indices <- order(mean_expression, decreasing = FALSE)
+sub_z <- sub_z[ordered_indices, ]
+
+genes_in_term <- row.names(sub_z)
+
+selected_genes <- c("Apoe", "Ldlr", "Hnf4a", "Apoa1", "Npc1", "Scarb1", "Sirt1", "Lcat", "Abca1", "Abcg1", "Lpl")
+# Initialize a vector of empty strings for row labels
+row_labels <- rep("", nrow(sub_z))
+
+# Match the selected genes to rownames(sub_z) and get their indices
+matching_indices <- match(selected_genes, rownames(sub_z))
+
+# Assign the selected gene names to the appropriate positions
+row_labels[matching_indices] <- selected_genes
+
+# Convert row labels to italicized expressions
+row_labels <- sapply(row_labels, function(label) {
+        if (label != "") parse(text = paste0("italic('", label, "')")) else label
+    })
+
+#define col labels
+label_positions <- c(2, 5, 8, 11, 14)
+
+col_labels <- rep("", ncol(sub_z))
+
+col_labels[label_positions] <- custom_labels
+
+#create heatmap
+png(paste0(dir.hm, "/Cholesterol homeostasis.png"), width = 270, height = 700)
+    
+column_split <- rep(1:5, each = 3)  
+
+# Create the heatmap with column slices and gaps
+hm <- Heatmap(sub_z,
+              heatmap_legend_param = list(title = "Z-score",
+                                           title_gp = gpar(fontsize = 18),
+                                           labels_gp = gpar(fontsize = 14),
+                                           legend_direction = "horizontal"),
+              cluster_rows = FALSE, cluster_columns = FALSE,
+              row_labels = row_labels,
+              row_names_gp = gpar(fontsize = 18),
+              column_labels = col_labels,
+              col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(100),
+              column_title = NULL,
+              column_names_rot = 90,
+              column_names_gp = gpar(fontsize = 18),
+              column_title_gp = gpar(fontsize = 18),
+              column_split = column_split,  
+              column_gap = unit(2, "mm"))
+
+draw(hm, heatmap_legend_side = "bottom")
+
+dev.off()
+
+```
+
+
+
+
+
+#heatmap from gene list
+```{r}
+createHeatmapFromGenes <- function(genes_oi, normalized_counts, custom_labels, selected_conditions) {
+    genes_oi <- as.vector(genes_oi)
+    
+    # Select only the specified conditions (columns) from normalized_counts
+    selected_columns <- colnames(normalized_counts) %in% selected_conditions
+    sub <- normalized_counts[genes_oi, selected_columns, drop = FALSE]
+    
+    sub_z <- t(scale(t(sub)))
+    sub_z <- sub_z[!rowSums(is.na(sub_z) | is.nan(sub_z)) > 0, ]
+    
+    # Determine image size based on the number of rows
+    n_rows <- nrow(sub_z)
+    height <- 700
+    width <- 270
+    
+    
+    
+    
+    gene_names_for_filename <- paste(head(genes_oi, 3), collapse = "_")
+    filename_string <- paste("Heatmap", custom_labels, gene_names_for_filename, sep = "_")
+    output_file <- paste0(dir.hm, "/", filename_string, ".png")
+    
+    
+    # rowlabels
+    row_labels <- rownames(sub_z)
+    
+   row_labels <- sapply(row_labels, function(label) {
+        if (label != "") parse(text = paste0("italic('", label, "')")) else label
+    })
+    
+    # Create column labels
+    col_labels <- rep("", ncol(sub))
+    replicate_count <- length(selected_conditions) / length(custom_labels)
+    for (i in seq_along(custom_labels)) {
+        mid_idx <- (i - 1) * replicate_count + ceiling(replicate_count / 2)
+        col_labels[mid_idx] <- custom_labels[i]
+    }
+    
+    png(output_file, width = width, height = height)
+    
+    column_split <- rep(1:5, each = 3)
+    
+    hm <- Heatmap(sub_z, 
+                  heatmap_legend_param = list(title = "Z-score",
+                                               title_gp = gpar(fontsize = 18),
+                                               labels_gp = gpar(fontsize = 14),
+                                              legend_direction = "horizontal"),
+                  cluster_rows = FALSE, cluster_columns = FALSE, 
+                  row_labels = row_labels,
+                  row_names_gp = gpar(fontsize = 18),
+                  column_labels = col_labels,
+                  col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(100),
+                  column_title = NULL,
+                  column_names_rot = 90,
+                  column_names_gp = gpar(fontsize = 18),
+                  column_split = column_split,  
+              column_gap = unit(2, "mm"))
+    
+    draw(hm, heatmap_legend_side = "bottom")
+    dev.off()
+    
+    message("Heatmap saved to: ", output_file)
+}
+```
+
+```{r}
+createHeatmapFromGenes <- function(genes_oi, normalized_counts, custom_labels, selected_conditions) {
+    genes_oi <- as.vector(genes_oi)
+    
+    # Select only the specified conditions (columns) from normalized_counts
+    selected_columns <- colnames(normalized_counts) %in% selected_conditions
+    sub <- normalized_counts[genes_oi, selected_columns, drop = FALSE]
+    
+    sub_z <- t(scale(t(sub)))
+    sub_z <- sub_z[!rowSums(is.na(sub_z) | is.nan(sub_z)) > 0, ]
+    
+    # Determine image size based on the number of rows
+    n_rows <- nrow(sub_z)
+    height <- 800
+    width <- 120 + ncol(sub_z) * 11
+    
+    # Determine which labels to show based on the number of rows
+    row_labels <- rownames(sub_z)
+    if (n_rows > 45) {
+        skip_count <- ceiling(n_rows / 45)
+        for (i in 1:n_rows) {
+            if ((i - 1) %% skip_count != 0) {
+                row_labels[i] <- ""
+            }
+        }
+    }
+    
+    # Convert row labels to italicized expressions
+    row_labels <- sapply(row_labels, function(label) {
+        if (label != "") parse(text = paste0("italic('", label, "')")) else label
+    })
+    
+    gene_names_for_filename <- paste(head(genes_oi, 3), collapse = "_")
+    filename_string <- paste("Heatmap", custom_labels, gene_names_for_filename, sep = "_")
+    output_file <- paste0(dir.hm, "/", filename_string, ".png")
+    
+    # Create column labels
+    col_labels <- rep("", ncol(sub))
+    replicate_count <- length(selected_conditions) / length(custom_labels)
+    for (i in seq_along(custom_labels)) {
+        mid_idx <- (i - 1) * replicate_count + ceiling(replicate_count / 2)
+        col_labels[mid_idx] <- custom_labels[i]
+    }
+    
+    png(output_file, width = width, height = height)
+    
+    hm <- Heatmap(sub_z, 
+                  heatmap_legend_param = list(title = "Z-score",
+                                               title_gp = gpar(fontsize = 18),
+                                               labels_gp = gpar(fontsize = 14),
+                                               legend_direction = "horizontal"),
+                  cluster_rows = FALSE, cluster_columns = FALSE, 
+                  row_labels = row_labels,
+                  row_names_gp = gpar(fontsize = 18),  # Italics apply through parsed expressions
+                  column_labels = col_labels,
+                  col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(100),
+                  column_title = "",
+                  column_names_rot = 90,
+                  column_names_gp = gpar(fontsize = 18))
+    draw(hm, heatmap_legend_side = "bottom")
+    dev.off()
+    
+    message("Heatmap saved to: ", output_file)
+}
+
+
+
+```
+
+
+
+```{r}
+genes_1 <- c("Nos2", "Arg1", "Il1b", "Il6", "Il10", "Il12a", "Tnf", "Ifngr1", "Ifnar1",  "Tlr1", "Tlr2", "Tlr4", "Tlr6", "Nlrp3", "Ptges", "Ly6c2", "Csf2rb", "Csf1r", "Slc11a1",  "Cd74", "H2-Ab1", "Ccr2", "Cd4", "Enpp2", "Lrg1", "Mmp9", "Lyve1", "Mrc1")
+
+selected_conditions <- colnames(normalized_counts)
+
+createHeatmapFromGenes(genes_1, normalized_counts, custom_labels, selected_conditions)
+```
+
+
+#Volcano
+```{r}
+
+createVolcano <- function(results, title) {
+    EnhancedVolcano(results,
+                    lab = rownames(results),
+                    x = 'log2FoldChange',
+                    y = 'padj',
+                    title = title,
+                    subtitle = '',
+                    xlab = 'Shrunk log2-fold change',
+                    ylab = expression("-Log"[10]*" P (adjusted)"),
+                    pCutoff = 0.05,
+                    FCcutoff = 0.5,
+                    col = c('grey30', 'forestgreen', 'royalblue', 'red2'))+
+          theme(plot.title = element_text(size = rel(1), face = "plain"))
+    
+    ggsave(paste0(dir.vo, "/Volcano_", gsub(" ", "_", title), ".png"), 
+           width = 7, height = 6, dpi = 600)
+}
+
+BM_BCG_vs_BM <- readRDS(paste0(dir.deg, "/BM_BCG_vs_BM.rds"))
+Res_vs_BM <- readRDS(paste0(dir.deg, "/Res_vs_BM.rds"))
+Res_BCG_vs_BM_BCG <- readRDS(paste0(dir.deg, "/Res_BCG_vs_BM_BCG.rds"))
+BM_hiBCG_vs_BM_BCG <- readRDS(paste0(dir.deg, "/BM_hiBCG_vs_BM_BCG.rds"))
+Res_BCG_vs_Res <- readRDS(paste0(dir.deg, "/Res_BCG_vs_Res.rds"))
+
+
+createVolcano(BM_BCG_vs_BM, 'BM-BCG vs BM')
+createVolcano(Res_vs_BM, 'Res vs BM')
+createVolcano(Res_BCG_vs_BM_BCG, 'Res-BCG vs BM-BCG')
+createVolcano(BM_hiBCG_vs_BM_BCG, bquote('BM-BCG'^hi~'vs BM-BCG'))
+createVolcano(Res_BCG_vs_Res, 'Res-BCG vs Res')
+```
+
+
+#all GSEA as csv
+```{r}
+createGSEA <- function(data_matrix, title) {
+  set.seed(123)
+  eg <- bitr(rownames(data_matrix), fromType = "SYMBOL", toType = "ENTREZID", OrgDb = "org.Mm.eg.db")
+  row.names(eg) <- eg$SYMBOL
+  eg$SYMBOL <- NULL
+  
+  diff_data <- merge(as.data.frame(data_matrix), eg, by = "row.names")
+  rownames(diff_data) <- diff_data$Row.names
+  diff_data$Row.names <- NULL
+
+  fc <- diff_data$log2FoldChange
+  names(fc) <- diff_data$ENTREZID
+  fc <- sort(fc, decreasing = TRUE)
+
+  gse_results <- gseGO(geneList = fc, ont = "BP", minGSSize = 15, pvalueCutoff = 0.05, verbose = TRUE, OrgDb = "org.Mm.eg.db", pAdjustMethod = "BH")
+  saveRDS(gse_results, paste0(dir.gse, "/GSEA_", gsub(" ", "_", title), ".rds"))
+  
+  gse_df <- as.data.frame(gse_results@result)
+  gse_df <- gse_df %>% arrange(desc(NES))
+  write.csv(gse_df, paste0(dir.gse, "/GSEA_", gsub(" ", "_", title), ".csv"), row.names = FALSE)
+}
+
+
+createGSEA(BM_BCG_vs_BM, 'BM-BCG vs BM')
+createGSEA(Res_vs_BM, 'Res vs BM')
+createGSEA(Res_BCG_vs_BM_BCG, 'Res-BCG vs BM-BCG')
+#createGSEA(BM_hiBCG_vs_BM_BCG, bquote('BM-BCG'^hi~'vs BM-BCG'))
+createGSEA(Res_BCG_vs_Res, 'Res-BCG vs Res')
+
+```
+
+#exemplary GSEA
+```{r}
+#rds_files <- list.files(dir.gse, pattern = "\\.rds$")
+GSEA_BM_BCG_vs_BM <- readRDS(paste0(dir.gse, "/GSEA_BM-BCG_vs_BM.rds"))
+#GSEA_Res_BCG_vs_BM_BCG <- readRDS(paste0(dir.gse, "/GSEA_Res-BCG_vs_BM-BCG.rds"))
+#GSEA_Res_BCG_vs_Res <- readRDS(paste0(dir.gse, "/GSEA_Res-BCG_vs_Res.rds"))
+#GSEA_Res_vs_BM <- readRDS(paste0(dir.gse, "/GSEA_Res_vs_BM.rds"))
+#View(GSEA_BM_BCG_vs_BM)
+
+terms1 <- c("interferon-mediated signaling pathway", "cytosolic pattern recognition receptor signaling pathway", "antigen processing and presentation", "innate immune response-activating signaling pathway", "prostaglandin secretion", "inflammasome-mediated signaling pathway")
+
+capitalize_first_letter <- function(terms) {
+    sapply(terms, function(x) {
+        paste0(toupper(substring(x, 1, 1)), substring(x, 2))
+    })
+}
+
+terms1_capitalized <- capitalize_first_letter(terms1)
+GSEA_BM_BCG_vs_BM@result$Description <- capitalize_first_letter(GSEA_BM_BCG_vs_BM@result$Description)
+head(GSEA_BM_BCG_vs_BM@result$Description)
+
+matching_terms <- terms1_capitalized %in% GSEA_BM_BCG_vs_BM@result$Description
+
+dotplot(GSEA_BM_BCG_vs_BM, showCategory=terms1_capitalized, split=".sign", font=12, title="BM-BCG vs BM") + 
+  facet_grid(.~.sign)
+
+options(enrichplot.colours = brewer.pal(11, "RdYlBu"))
+dotplot(GSEA_BM_BCG_vs_BM, 
+        showCategory=terms1_capitalized, 
+        split=".sign", 
+        font=12, 
+        title="BM-BCG vs BM") + 
+  facet_grid(.~.sign)
+
+ggsave(paste0(dir.gse,"/GSEA_BM_BCG_vs_BM.png"), height=3.9, width=4.8, dpi=600)
+
+
+```
+
+
+
+
+
+#PCA plot
+```{r}
+#repeat custom_labels, because redefined before
+rld<-rlogTransformation(dds_n)
+        
+pcaData <- plotPCA(rld, intgroup = c("condition"), returnData=T)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+pcaData$condition <- factor(pcaData$condition, levels = conditions_order)
+
+ggplot(pcaData, aes(PC1, PC2, color= condition), order=T) +
+  geom_point(size=4) +
+  xlab(paste0("PC 1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC 2: ",percentVar[2],"% variance"))+
+  scale_color_manual(values=custom_colors, labels = custom_labels)+ 
+  theme_minimal() +
+  labs(color = "Condition")+
+  theme(axis.title=element_text(size=18), axis.text=element_text(size=14), legend.text=element_text(size=14), legend.title=element_text(size=14)) 
+
+ggsave(paste0(dir,"/PCAplot.png"), height=3, width=3.7, dpi=600)
+
+```
+
