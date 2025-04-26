@@ -1,0 +1,330 @@
+---
+title: "2.2TXnoint"
+output: html_document
+date: '2022-06-09'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2)
+library(openxlsx)
+library(dplyr)
+library(patchwork)
+library(SeuratWrappers)
+library(batchelor)
+library(reticulate)
+library(dittoSeq)
+library(RColorBrewer)
+library(viridis)
+library(SeuratDisk)
+
+mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
+
+dir <- "Results/visualization"
+dir.v <- "Results/Violins"
+
+colors <- c(
+  "1" = "#E76F51",
+  "2" = "#E9C46A",
+  "3" = "#36BA98",
+  "4H" = "#03396c",
+  "4I" = "#005b96",
+  "4C" = "#6497b1",
+  "4R" = "#b3cde0"
+)
+
+colors.rev <- c(
+  "#b3cde0",
+  "#6497b1",
+  "#005b96",
+  "#03396c",
+  "#36BA98",
+  "#E9C46A",
+  "#E76F51"
+   )
+
+table(mac.TX$renamed_clusters)
+```
+
+
+```{r}
+plot <- DimPlot(
+  mac.TX, 
+  reduction = "umap", 
+  order = FALSE, 
+  group.by = "renamed_clusters", 
+  raster = FALSE, 
+  label = FALSE, 
+  repel = T, 
+  pt.size = 1.2, 
+  cols = colors
+) +
+scale_x_continuous(name="UMAP 1") +
+scale_y_continuous(name="UMAP 2") +
+scale_color_manual(
+  breaks = c("1", "2", "3", "4H", "4I", "4C", "4R"),  
+  labels = c("1: Monocyte-like", "2: MHCII+", "3: sNaM", "4H: Homeostatic", "4I: Inflammatory", "4C: Ctsk+", "4R: Regulatory"),
+  values=colors) +
+theme(
+  strip.text.x = element_text(size = 18, face = "plain"),
+  plot.title = element_blank()
+)
+
+umap_coords <- as.data.frame(Embeddings(mac.TX, reduction = "umap"))
+umap_coords$cluster <- mac.TX$renamed_clusters
+umap_coords$renamed_clusters <- mac.TX$renamed_clusters
+
+
+# Compute the median center (or any other appropriate summary) for each cluster within each facet
+cluster_centers <- umap_coords %>%
+  group_by(renamed_clusters, cluster) %>%
+  summarize(umap_1 = median(umap_1), 
+            umap_2 = median(umap_2), 
+            .groups = 'drop')
+
+plot <- plot + 
+  geom_point(data = cluster_centers, 
+             aes(x = umap_1, y = umap_2), 
+             shape = 21,     
+             fill = scales::alpha("white", 0.6),  
+             color = "transparent", 
+             size = 8)        
+
+plot <- plot +
+  geom_text(data = cluster_centers,
+            aes(x = umap_1, y = umap_2, label = cluster),
+            fontface = "plain",
+            size = 5)
+
+plot
+ggsave(paste0(dir,"/Clusters_UMAP.png"), height=5, width=6, dpi=600)
+```
+
+
+```{r}
+plot2 <- DimPlot(
+  mac.TX, 
+  reduction = "umap", 
+  split.by = "Experiment",
+  order = FALSE, 
+  group.by = "renamed_clusters", 
+  raster = FALSE, 
+  label = FALSE, 
+  repel = T, 
+  pt.size = 1.2, 
+  cols = colors
+) +
+scale_x_continuous(name="UMAP 1") +
+scale_y_continuous(name="UMAP 2") +
+NoLegend() +
+theme(
+  strip.text.x = element_text(size = 18, face = "plain"),
+  plot.title = element_blank()
+)
+
+umap_coords <- as.data.frame(Embeddings(mac.TX, reduction = "umap"))
+umap_coords$cluster <- mac.TX$renamed_clusters
+umap_coords$Experiment <- mac.TX$Experiment
+
+
+# Compute the median center (or any other appropriate summary) for each cluster within each facet
+cluster_centers <- umap_coords %>%
+  group_by(Experiment, cluster) %>%
+  summarize(umap_1 = median(umap_1), 
+            umap_2 = median(umap_2), 
+            .groups = 'drop')
+
+
+plot2 <- plot2 + 
+  geom_point(data = cluster_centers, 
+             aes(x = umap_1, y = umap_2), 
+             shape = 21,     
+             fill = scales::alpha("white", 0.6),  
+             color = "transparent", 
+             size = 10)        
+
+plot2 <- plot2 +
+  geom_text(data = cluster_centers,
+            aes(x = umap_1, y = umap_2, label = cluster),
+            fontface = "plain",
+            size = 6)
+
+
+plot2
+ggsave(paste0(dir,"/Clusters_split_UMAP.png"), height=5, width=15, dpi=600)
+
+```
+
+#DotPlot
+```{r}
+mac.TX$renamed_clusters <- factor(mac.TX$renamed_clusters,
+                                         levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+# Set the active identity if needed
+Idents(mac.TX) <- mac.TX$renamed_clusters
+
+levels(Idents(mac.TX))
+
+genes2 <- c(
+  "Gpnmb", "Abcg1", "Ly6c2", "Thbs1",  #1
+  "Csf2rb", "Cd74", "Lyz1", #2
+  "Cd9", "Pdgfb", "Cx3cr1", #3
+  "Gdf15", "Mat2a", #4H
+  "Il1a", "Cxcl1", "Ccl4", #4I
+  "Ctsk", "Cd109", #4C
+  "Csf1r",  "Fos", "Maf", "Jun" #4R
+  )
+
+
+generate_dotplot <- function(seurat_object, features, object_name) {
+  # Convert feature names to italic expression
+  features_italic <- lapply(features, function(x) bquote(italic(.(x))))
+  
+  plot <- DotPlot(seurat_object, features = features, scale = TRUE, cols = c("RdYlBu")) + 
+    geom_point(aes(size = pct.exp), shape = 21, colour = "black", stroke = 0.5) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "black", fill = "white"), title = "Percent Expression")) +
+    xlab('') +  
+    ylab('Cluster') +
+    RotatedAxis() +
+    scale_y_discrete(limits = rev) + 
+    scale_x_discrete(labels = features_italic) +  
+    theme(axis.text.y = element_text(color = colors.rev, size = 14, face = "bold"),
+          axis.title = element_text(size = 14),
+          panel.background = element_blank(),
+          panel.border = element_rect(fill = NA),
+          text = element_text(size = 12),
+          panel.grid.major.x = element_line(color = "grey80"),
+          panel.grid.major.y = element_line(color = "grey80"))
+  
+  filename <- paste0(dir, "/", object_name, "_", paste(head(features), collapse = "_"), "_dotplot.png")
+  
+  ggsave(filename, plot = plot, height = 3.8, width = 2.6 + length(features) * 0.2, dpi = 600)
+  
+  return(filename)
+}
+
+
+generate_dotplot(mac.TX, genes2, "TX_reference_mapped")
+
+
+```
+
+```{r}
+
+
+mac.TX$Experiment <- factor(mac.TX$Experiment, levels = c("D4", "R4", "D16", "R16"))
+
+levels(mac.TX$Experiment)
+
+cols=c("#0000FF", "#026c45", "#55A0FB", "#90EE90")
+
+# Create the stacked bar plot using dittoseq
+dittoBarPlot(object = mac.TX, var = "Experiment", group.by = "renamed_clusters", color.panel=cols, retain.factor.levels=T)+
+  scale_fill_manual(
+    name = "Condition",  
+    values = cols, 
+    labels = c("BM - 4 weeks", "Res - 4 weeks", "BM - 16 weeks", "Res - 16 weeks")
+  ) +
+  labs(title = "Cluster origin", x = "Cluster", y = "Fraction of cells")
+
+ggsave(paste0(dir, "/Cluster_origin.png"), dpi=600, height=3, width=3)
+
+
+```
+
+
+```{r}
+FeaturePlot(mac.TX, features = c("Cd74"), reduction = "umap")
+```
+
+#raw numbers
+```{r}
+hist(mac.TX$predicted.new_clusters.score, breaks=30)
+?hist
+tab <- table(mac.TX$Experiment, mac.TX$predicted.new_clusters)
+
+tab_df_matrix <- as.data.frame.matrix(tab)
+write.csv(tab_df_matrix, file = paste0(dir, "/cluster_counts.csv"), row.names = T)
+```
+
+# rename clusters
+```{r}
+table(mac.TX$predicted.new_clusters)
+
+# 1. Define the mapping vector
+cluster_mapping <- c("1" = "4H", 
+                     "2" = "4I", 
+                     "3" = "2", 
+                     "4" = "4R", 
+                     "5" = "4C", 
+                     "6" = "1", 
+                     "7" = "3")
+
+# 2. Extract the predicted clusters from the meta.data slot
+# This ensures you work with the correct ordering and cell names.
+predicted <- as.character(mac.TX@meta.data$predicted.new_clusters)
+
+# Map the predicted clusters to new labels using the mapping vector
+new_metadata <- cluster_mapping[predicted]
+
+# 3. Assign the names of the new metadata vector to be the Seurat cell names.
+names(new_metadata) <- rownames(mac.TX@meta.data)
+
+# Optionally check the head to verify the names are now cell barcodes:
+head(new_metadata)
+
+# 4. Add the new metadata column to the Seurat object with AddMetaData()
+mac.TX <- AddMetaData(mac.TX, metadata = new_metadata, col.name = "renamed_clusters")
+
+# Verify that the column was correctly added:
+table(mac.TX$renamed_clusters)
+
+mac.TX$renamed_clusters <- factor(mac.TX$renamed_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac.TX) <- mac.TX$renamed_clusters
+
+```
+
+
+#save object
+```{r}
+
+SaveH5Seurat(mac.TX, filename = "mac_TX_integrated.h5Seurat")
+mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

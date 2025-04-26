@@ -1,0 +1,102 @@
+---
+title: "3FindMarkers"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(openxlsx)
+library(presto)
+library(ggplot2)
+
+dir <- "Results/3TXFindMarkers"
+
+
+mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
+
+mac.TX <- NormalizeData(mac.TX, normalization.method = "LogNormalize")
+
+table(mac.TX$renamed_clusters)
+
+Idents(mac.TX) <- "renamed_clusters"
+```
+
+
+```{r}
+p_value <- 0.05
+
+#Find markers for every cluster compared to all remaining cells
+TX.markers <- FindAllMarkers(mac.TX, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+TX.markers <- TX.markers[TX.markers$p_val_adj < p_value, ]
+TX.markers <- TX.markers %>%
+  arrange(cluster, desc(avg_log2FC))
+
+TX.markers.top <- TX.markers %>%
+                            group_by(cluster) %>%
+                            slice_max(n = 20, order_by = avg_log2FC)
+
+saveRDS(TX.markers, paste0(dir,"/TX.markers.RDS"))
+write.xlsx(TX.markers, paste0(dir,"/TX.markers.xlsx"))
+write.xlsx(TX.markers.top, paste0(dir,"/TX.markers.top.xlsx"))
+
+```
+
+#specific comparisons
+```{r}
+TX@meta.data$Experiment=="D4"
+
+# Subset the Seurat object to only include cells from the two conditions
+D4 <- subset(TX, subset = Experiment == "D4")
+D16 <- subset(TX, subset = Experiment == "D16")
+
+# Set the "Experiment" metadata as the active identity class
+TX <- SetIdent(TX, value = "Experiment")
+
+# Check if the identity levels include "D4" and "D16"
+levels(TX)
+
+# Find differentially expressed genes between D4 and D16 conditions
+D16_4 <- FindMarkers(TX, ident.1 = "D16", ident.2 = "D4", logfc.threshold = 0.25, only.pos = FALSE, min.pct=0.05)
+?FindMarkers
+
+D16_4_filtered <- D16_4 %>%
+  filter(p_val_adj < 0.05) %>%
+  arrange(desc(avg_log2FC))
+
+saveRDS(D16_4_filtered, paste0(dir,"/TX.markers.D16_4.RDS"))
+
+D16_4_filtered$Gene <- rownames(D16_4_filtered)
+                        
+write.xlsx(D16_4_filtered, paste0(dir,"/TX.markers.D16_4_filtered.xlsx"))
+head(D16_4_filtered)
+
+```
+
+```{r}
+genes_adaptation <- c("Cd209f", "Enpep", "Cd209e", "Cxcl13", "Dnase1l3", "Chp2", "Ccl8", 
+                   "Cd209b", "Slc15a2", "Cd209d", "Ctsk", "Tfrc", "Fgfr1", "Serpinb6a", 
+                   "Klf4", "Plekhm1", "Plau", "Clec10a", "Timp2", "Hbegf", "Adam19", 
+                   "Tnfrsf12a", "Gpr68", "Hmox1", "Igf1", "Cd86", "Clec4e", "Birc3", "Adgre5", "Ccl9", "Il1rn", "Sod2", 
+                     "Ptprc", "Il6", "Cxcl3", "Ccr1", "Ccr5", "Ncf4", "Ptgs2", 
+                     "Itgb7", "Traf1", "Ccl5", "Ccr2", "Ifih1", "Fn1", "Thbs1", 
+                     "Isg15", "Il7r", "Tnf", "Ccl6", "Col20a1")
+
+
+# Ensure "Experiment" is set as the active identity class
+TX <- SetIdent(TX, value = "Experiment")
+
+# Create the dot plot
+p <- DotPlot(TX, features = genes_adaptation, group.by = "Experiment") +
+  RotatedAxis() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+
+

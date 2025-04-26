@@ -1,0 +1,290 @@
+---
+title: "2.2TXnoint"
+output: html_document
+date: '2022-06-09'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2)
+library(openxlsx)
+library(dplyr)
+library(patchwork)
+library(SeuratWrappers)
+library(batchelor)
+library(reticulate)
+library(dittoSeq)
+library(RColorBrewer)
+library(viridis)
+library(SeuratDisk)
+
+mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
+
+dir <- "Results/2.3TX_Int_steady"
+dir.v <- "Results/Violins"
+
+colors <- c(
+  "1" = "#E76F51",
+  "2" = "#E9C46A",
+  "3" = "#36BA98",
+  "4H" = "#03396c",
+  "4I" = "#005b96",
+  "4C" = "#6497b1",
+  "4R" = "#b3cde0"
+)
+
+colors.rev <- c(
+  "#b3cde0",
+  "#6497b1",
+  "#005b96",
+  "#03396c",
+  "#36BA98",
+  "#E9C46A",
+  "#E76F51"
+   )
+
+future::plan(future::multicore, workers = 4) 
+options(future.globals.maxSize = 12000 * 1024^2)  
+
+
+```
+
+#read and filter TX
+```{r}
+D4 =readRDS("Results/1TXReadinData/D4.RDS")
+D16 =readRDS("Results/1TXReadinData/D16.RDS")
+R4 =readRDS("Results/1TXReadinData/R4.RDS")
+R16 =readRDS("Results/1TXReadinData/R16.RDS")
+
+# Add percent mitochondrial genes per cell
+D4[["percent.mt"]] <- PercentageFeatureSet(D4, pattern = "^mt-")
+D16[["percent.mt"]] <- PercentageFeatureSet(D16, pattern = "^mt-")
+R4[["percent.mt"]] <- PercentageFeatureSet(R4, pattern = "^mt-")
+R16[["percent.mt"]] <- PercentageFeatureSet(R16, pattern = "^mt-")
+
+# QC filtering
+D4 <- subset(D4, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000)
+D4 <- subset(D4, subset= Zbtb46 <2)
+
+D16 <- subset(D16, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000)
+D16 <- subset(D16, subset= Zbtb46 <2)
+
+R4 <- subset(R4, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000)
+R4 <- subset(R4, subset= Zbtb46 <2 & Cpa3 <2)
+
+R16 <- subset(R16, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000)
+R16 <- subset(R16, subset= Zbtb46 <2 & Cpa3 <2)
+
+mac.TX <- merge(D4, y=c(D16, R4, R16), add.cell.ids = c("D4", "D16", "R4", "R16"))
+
+mac.TX <- NormalizeData(mac.TX, normalization.method = "LogNormalize")
+```
+
+###Approach 1:  reference mapping
+#load reference dataset, rerun RunUMAP and include return.model=T
+```{r}
+mac <- readRDS("Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Results/2.3Int_all/all_data.RDS")
+
+
+
+mac <- RunUMAP(mac, reduction = "pca", dims=1:30, return.model = TRUE, seed.use = 19)
+
+umap_coords <- Embeddings(mac, "umap")
+umap_coords[,1] <- -umap_coords[,1]
+mac[["umap"]]@cell.embeddings <- umap_coords
+
+DimPlot(mac, reduction="umap", split.by="Experiment2")
+
+```
+
+#rename, filter ref dataset 
+```{r}
+# Create a new column in the metadata to store the modified cluster information
+mac$new_clusters <- mac$seurat_clusters
+
+# Merge clusters 0 and 1 into one cluster labeled "1"
+mac$new_clusters[mac$seurat_clusters %in% c("0", "1")] <- "1"
+
+mac$new_clusters[mac$seurat_clusters %in% c("2", "7")] <- "2"
+
+# Remove the entries for cluster 0 from the new_clusters column
+mac$new_clusters[mac$new_clusters == "0"] <- NA
+mac$new_clusters[mac$new_clusters == "7"] <- NA
+
+mac$new_clusters[mac$seurat_clusters %in% c("8")] <- "7"
+
+# Now, remove the '0' level from the factor
+mac$new_clusters <- droplevels(mac$new_clusters)
+
+# Set the active identity to your manually defined "new_clusters" column
+Idents(mac) <- mac$new_clusters
+
+mac_sub7 <- subset(mac, idents = c(1:7))
+
+# Verify the active identities
+levels(Idents(mac_sub7))
+
+mac.wt <- subset(x=mac_sub7,subset=Experiment2=="WT")
+
+mac.wt$new_clusters <- droplevels(mac.wt$new_clusters)
+
+table(mac.wt$new_clusters)
+
+DimPlot(mac.wt, reduction="umap")
+
+Assays(mac.wt)
+
+names(mac.wt@assays)
+
+DefaultAssay(mac.wt) <- "integrated"
+
+mac.wt[["SCT"]]@SCTModel.list <- mac.wt[["SCT"]]@SCTModel.list[1]
+
+DimPlot(mac.wt, reduction="umap")
+
+#DefaultAssay(mac.wt) <- "integrated"
+
+```
+
+# reference mapping
+```{r}
+set.seed(1)
+
+DefaultAssay(mac.TX) <- "RNA"
+mac.TX <- SCTransform(mac.TX, verbose = FALSE)
+
+
+anchors <- FindTransferAnchors(reference = mac.wt, query = mac.TX, dims = 1:30, reference.reduction = "pca")
+
+predictions <- TransferData(anchorset = anchors, refdata = mac.wt$new_clusters, dims = 1:30)
+
+mac.TX <- AddMetaData(mac.TX, metadata = predictions)
+
+colnames(mac.TX@meta.data)
+
+mac.TX <- MapQuery(anchorset = anchors, reference = mac.wt, query = mac.TX,
+    refdata = list(new_clusters = "new_clusters"), reference.reduction = "pca", reduction.model = "umap")
+
+table(mac.TX$predicted.new_clusters)
+```
+
+
+#ok looking: e.g. seed.use = 24
+
+
+#Test RunUMAP models with different seed.use
+```{r}
+# Open a PDF device to save the plots
+pdf("UMAP_Comparison.pdf")
+
+# Loop over seed values from 2 to 20
+for (seed in 21:40) {
+  # Run UMAP using the current seed
+  mac.TX <- RunUMAP(mac.TX, reduction = "ref.pca", dims = 1:30, seed.use = seed)
+  
+  # Create a DimPlot and add a title indicating the seed used
+  p <- DimPlot(mac.TX, 
+               reduction = "umap", 
+               order = FALSE, 
+               group.by = "predicted.new_clusters") +
+       ggtitle(paste("Seed:", seed))
+  
+  # Print the plot to the current PDF page
+  print(p)
+}
+
+# Close the PDF device
+dev.off()
+
+```
+
+```{r}
+mac.TX <- RunUMAP(mac.TX, reduction = "ref.pca", dims = 1:30, seed.use = 24)
+
+DimPlot(mac.TX, 
+  reduction = "umap", 
+  order = FALSE, 
+  group.by = "predicted.new_clusters")
+
+```
+
+# rename clusters
+```{r}
+table(mac.TX$predicted.new_clusters)
+
+# 1. Define the mapping vector
+cluster_mapping <- c("1" = "4H", 
+                     "2" = "4I", 
+                     "3" = "2", 
+                     "4" = "4R", 
+                     "5" = "4C", 
+                     "6" = "1", 
+                     "7" = "3")
+
+# 2. Extract the predicted clusters from the meta.data slot
+# This ensures you work with the correct ordering and cell names.
+predicted <- as.character(mac.TX@meta.data$predicted.new_clusters)
+
+# Map the predicted clusters to new labels using the mapping vector
+new_metadata <- cluster_mapping[predicted]
+
+# 3. Assign the names of the new metadata vector to be the Seurat cell names.
+names(new_metadata) <- rownames(mac.TX@meta.data)
+
+# Optionally check the head to verify the names are now cell barcodes:
+head(new_metadata)
+
+# 4. Add the new metadata column to the Seurat object with AddMetaData()
+mac.TX <- AddMetaData(mac.TX, metadata = new_metadata, col.name = "renamed_clusters")
+
+# Verify that the column was correctly added:
+table(mac.TX$renamed_clusters)
+
+mac.TX$renamed_clusters <- factor(mac.TX$renamed_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac.TX) <- mac.TX$renamed_clusters
+
+```
+
+#save object
+```{r}
+
+SaveH5Seurat(mac.TX, filename = "mac_TX_integrated.h5Seurat")
+mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
