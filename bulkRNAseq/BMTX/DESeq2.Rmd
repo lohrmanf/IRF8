@@ -1,0 +1,498 @@
+---
+title: "Deseq2"
+output: html_document
+date: "2024-05-07"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(DESeq2)
+library(tidyverse)
+library(pheatmap)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(apeglm)
+library(stats)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(DOSE)
+library(AnnotationDbi)
+library(GO.db)
+library(tools)
+library(patchwork)
+
+dir <- "Results"
+dir.deg <- "Results/DEG"
+dir.nc <- "Results/NC"
+dir.vo <- "Results/Volcanos"
+dir.gse <- "Results/GSEA"
+dir.hm <- "Results/Heatmaps"
+
+conditions_original <- c("Res_Resupply", "BM", "Res_Sustaining")
+conditions_order <- c("BM", "Res_Resupply", "Res_Sustaining")
+custom_colors <- c("#00008B", "cornflowerblue", "#f4a261")
+names(custom_colors) <- conditions_order
+
+dds_n <- readRDS("dds_n.rds")
+normalized_counts <- read.csv(paste0(dir, "/normalized_counts.csv"), row.names=1)
+```
+
+#create deseq object
+```{r}
+df <- read_tsv("raw_counts.tsv")
+
+df <- df[!duplicated(df$gene), ]
+
+#remove genes:
+non_functional_patterns <- c("^Gm", "...Rik$", "^RP", "^ERCC-", "^MIR", "^LINC", "^SNORD", "^mt-", "^NA")
+df <- df[!grepl(paste(non_functional_patterns, collapse="|"), df$gene), ]
+
+countData <- as.data.frame(df[, 3:11])
+
+rownames(countData)<- df$gene
+
+conditions <- rep(conditions_original, each=3)
+
+colData <- data.frame(condition = conditions)
+
+# Convert to DESeq2
+dds <- DESeqDataSetFromMatrix(countData = countData,
+                              colData = colData,
+                              design = ~ condition)
+
+#normalization
+dds_n <- DESeq(dds)
+
+summary(results(dds_n))
+plotDispEsts(dds_n)
+
+saveRDS(dds_n, file = "dds_n.rds")
+
+```
+
+
+#normalized counts
+```{r}
+conditions <- colData(dds_n)$condition
+
+unique_conditions <- unlist(sapply(unique(conditions), function(cond) {
+    paste(cond, 1:sum(conditions == cond), sep = "-")
+}))
+
+normalized_counts <- counts(dds_n, normalized = TRUE)
+
+colnames(normalized_counts) <- unique_conditions
+
+desired_order <- c("BM-1", "BM-2", "BM-3", "Res_Resupply-1", "Res_Resupply-2", "Res_Resupply-3", "Res_Sustaining-1", "Res_Sustaining-2", "Res_Sustaining-3")
+
+normalized_counts <- normalized_counts[, desired_order]
+
+write.csv(normalized_counts, paste0(dir, "/normalized_counts.csv"))
+```
+
+
+#plots for normalized counts
+```{r}
+gene_of_interest <- "Irf4"
+
+gene_counts <- normalized_counts[gene_of_interest, ]
+
+plot_data <- data.frame(
+  Condition = rep(colData(dds_n)$condition, each=length(gene_counts)/length(colData(dds_n)$condition)),
+  Replicate = factor(rep(1:3, length(gene_counts)/3)),
+  Counts = gene_counts
+)
+
+plot_data$Condition <- factor(plot_data$Condition, levels = conditions_order)
+
+mean_counts <- plot_data %>%
+  group_by(Condition) %>%
+  summarise(MeanCounts = mean(Counts))
+
+p <- ggplot() +
+  geom_bar(data = mean_counts, aes(x=Condition, y=MeanCounts), stat="identity", position=position_dodge(), fill=NA, color="black") +
+  geom_point(data = plot_data, aes(x=Condition, y=Counts, color=Condition), position=position_jitterdodge(dodge.width=0.8), size=3) +
+  scale_fill_manual(values = custom_colors) +
+  scale_color_manual(values = custom_colors) +
+  labs(title= paste0("Expression of ", gene_of_interest), x="Condition", y="Normalized Counts") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p
+ggsave(paste0(dir.nc, "/", gene_of_interest, ".png"), height=3, width=3, dpi=600)
+```
+
+
+#DEG - single comparisons
+```{r}
+dds_n <- readRDS("dds_n.rds")
+resultsNames(dds_n)
+
+#condition_Res_Resupply_vs_BM
+res <- results(dds_n, name="condition_Res_Resupply_vs_BM")
+shrink <- lfcShrink(dds_n, coef="condition_Res_Resupply_vs_BM", type="apeglm")
+saveRDS(shrink, paste0(dir.deg, "/Res_Resupply_vs_BM.rds"))
+signif <- shrink[!is.na(shrink$padj) & shrink$padj < 0.05, ]
+write.csv(signif, file = paste0(dir.deg, "/condition_Res_Resupply_vs_BM.csv"))
+
+dds_n$condition <- relevel(dds_n$condition, ref="Res_Resupply")
+dds_n <- DESeq(dds_n)
+resultsNames(dds_n)
+
+#condition_Res_Sustaining_vs_Res_Resupply
+res <- results(dds_n, name="condition_Res_Sustaining_vs_Res_Resupply")
+shrink <- lfcShrink(dds_n, coef="condition_Res_Sustaining_vs_Res_Resupply", type="apeglm")
+saveRDS(shrink, paste0(dir.deg, "/Res_Sustaining_vs_Res_Resupply.rds"))
+signif <- shrink[!is.na(shrink$padj) & shrink$padj < 0.05, ]
+write.csv(signif, file = paste0(dir.deg, "/condition_Res_Sustaining_vs_Res_Resupply.csv"))
+
+
+```
+
+#heatmaps from GO terms
+```{r}
+createHeatmapGO <- function(go_id) {
+    genes_oi <- AnnotationDbi::select(org.Mm.eg.db, 
+                                      keys = go_id, 
+                                      columns = c("SYMBOL", "GENENAME"), 
+                                      keytype = "GO")
+    # Handle duplicates and extract unique valid gene symbols
+    valid_genes <- unique(genes_oi$SYMBOL)
+    valid_genes <- valid_genes[valid_genes %in% rownames(normalized_counts)]
+    valid_genes <- valid_genes[valid_genes %in% rownames(Res_vs_BM)]
+    
+    # Add error handling: skip if no valid genes
+    if (length(valid_genes) == 0) {
+        message("No valid genes found for GO ID: ", go_id, ". Skipping...")
+        return(NULL) 
+    }
+    
+    go_term_name <- Term(GOTERM[[go_id]])
+    go_term_name <- tools::toTitleCase(go_term_name)
+    sub <- normalized_counts[valid_genes, ]
+    sub_z <- t(scale(t(sub)))
+    sub_z <- sub_z[!rowSums(is.na(sub_z) | is.nan(sub_z)) > 0, ]
+    
+    # Order genes based on the mean expression of the first three columns
+    mean_expression <- rowMeans(sub_z[, 1:3])
+    ordered_indices <- order(mean_expression, decreasing = TRUE)
+    sub_z <- sub_z[ordered_indices, ]
+    
+    # Determine image size based on the number of rows
+    n_rows <- nrow(sub_z)
+    height <- min(500 + n_rows * 30, 2500)
+    width <- 600
+    
+    # Determine which labels to show based on the number of rows
+    row_labels <- rownames(sub_z)
+    if (n_rows > 85) {
+        skip_count <- ceiling(n_rows / 85)
+        for (i in 1:n_rows) {
+            if ((i - 1) %% skip_count != 0) {
+                row_labels[i] <- ""
+            }
+        }
+    }
+    
+    # Convert row labels to italicized expressions
+    row_labels <- sapply(row_labels, function(label) {
+        if (label != "") parse(text = paste0("italic('", label, "')")) else label
+    })
+    
+    column_labels <- rep("", ncol(sub_z))
+    column_labels[c(2, 5, 8)] <- custom_labels
+    
+    png(paste0(dir.hm, "/", go_term_name, ".png"), width = width, height = height)
+    
+    column_split <- rep(1:3, each = 3) 
+    
+    hm <- Heatmap(sub_z, name = "Z-score", 
+                  cluster_rows = FALSE, cluster_columns = FALSE, 
+                  row_labels = row_labels,
+                  column_title = NULL,
+                  column_labels = column_labels,
+                  column_names_rot = 60,
+                  col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(100),
+                  column_names_gp = gpar(fontsize = 34),
+                  row_names_gp = gpar(fontsize = 34),
+                  column_split = column_split,  
+              column_gap = unit(5, "mm"),
+              heatmap_legend_param = list(
+    title = "Z score\n",        
+    title_gp = gpar(fontsize = 34), 
+    labels_gp = gpar(fontsize = 26),
+    direction = "vertical",
+    legend_height = unit(60, "mm"),
+    legend_gap = unit(30, "mm")))
+    draw(hm, heatmap_legend_side = "right", padding = unit(c(36,10,36,10), "mm"))
+    dev.off()
+}
+?Heatmap
+```
+
+#define GO and call function. Now only with genes significant between bm and res.
+```{r}
+Res_vs_BM <- read.csv("Results/DEG/condition_Res_Resupply_vs_BM.csv", row.names=1)
+
+GO.list <- c(
+  "GO:0008283", "GO:0045087",  "GO:0007160")
+
+custom_labels <- c(
+  "BM-mac", 
+  "Res-mac (WT BM)", 
+  expression("Res-mac ("*italic("Irf8")*""^"-/-"*" BM)")
+)
+
+for (go_id in GO.list) {
+    createHeatmapGO(go_id)
+}
+
+```
+
+
+```{r}
+createHeatmapFromGenes <- function(genes_oi, normalized_counts) {
+    genes_oi <- as.vector(genes_oi)
+    
+    sub <- normalized_counts[genes_oi, colnames(normalized_counts), drop = FALSE]
+    
+    sub_z <- t(scale(t(sub)))
+    sub_z <- sub_z[!rowSums(is.na(sub_z) | is.nan(sub_z)) > 0, ]
+    
+    # Order genes based on the mean expression
+    mean_expression <- rowMeans(sub_z[, 7:9])
+    ordered_indices <- order(mean_expression, decreasing = TRUE)
+    sub_z <- sub_z[ordered_indices, ]
+    
+    # Determine image size based on the number of rows
+    n_rows <- nrow(sub_z)
+    height <- min(500 + n_rows * 30, 2500)
+    width <- 600
+    
+    # Determine which labels to show based on the number of rows
+    row_labels <- rownames(sub_z)
+    
+    # Convert row labels to italicized expressions
+    row_labels <- sapply(row_labels, function(label) {
+        if (label != "") parse(text = paste0("italic('", label, "')")) else label
+    })
+    
+    gene_names_for_filename <- paste(head(genes_oi, 4), collapse = "_")
+    filename_string <- paste("Heatmap", gene_names_for_filename, sep = "_")
+    output_file <- paste0(dir.hm, "/", filename_string, ".png")
+    
+    column_labels <- rep("", ncol(sub_z))
+    column_labels[c(2, 5, 8)] <- custom_labels
+    
+    png(output_file, width = width, height = height)
+    
+    column_split <- rep(1:3, each = 3) 
+    
+    hm <- Heatmap(sub_z, name = "Z-score", 
+                  cluster_rows = FALSE, cluster_columns = FALSE, 
+                  row_labels = row_labels,
+                  column_title = NULL,
+                  column_labels = column_labels,
+                  column_names_rot = 60,
+                  column_names_gp = gpar(fontsize = 34),
+                  row_names_gp = gpar(fontsize = 34),
+                  col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(100),
+                  column_split = column_split,  
+              column_gap = unit(5, "mm"),
+              heatmap_legend_param = list(
+    title = "Z score\n",        
+    title_gp = gpar(fontsize = 34), 
+    labels_gp = gpar(fontsize = 26),
+    direction = "vertical",
+    legend_height = unit(60, "mm"),
+    legend_gap = unit(30, "mm")))
+    
+    draw(hm, heatmap_legend_side = "right", padding = unit(c(36,10,36,10), "mm"))
+    
+    dev.off()
+    
+    message("Heatmap saved to: ", output_file)
+}
+
+?Heatmap
+```
+
+#provide gene list and call function
+```{r}
+list.diff<- c("Atp2b4", "Ptgs2", "Itpkb",  "Spred1", "Huwe1", "Rapgef2", "Etv3", "Lmna", "Nr4a3", "Abca1", "Tnip3", "Mxd1",  "Eps8", "Akap13", "Picalm", "Mki67", "Prdm1", "Kat6a",  "Rab11fip1",  "Tppp3", "Zmiz1", "Spryd7", "Ldlr", "Hspa8",  "Myo1g", "Sptbn1", "Gas7", "Kdm6b", "Jarid2", "Kmt2d", "Zfp263", "Abcc1", "Cebpd", "Nrros", "Srrm2", "Got1", "Nfkb2", "Irf4")
+list.imm <- c("Ifi203", "Il1b", "Cxcl3", "Ccl24", "Srgn", "Mmp19", "H2-Ab1", "H2-Aa", "H2-Eb1", "Cd74", "Malt1", "Ccr5", "Nlrp3", "Csf3", "Socs3")
+list.extrac <- c("Fn1", "Cd44", "Thbs1", "Jag1", "Flrt3", "Col1a2", "Emilin2", "Plec", "Alcam", "Flnb", "Micall1", "Actg1", "Cytip")
+
+custom_labels <- c(
+  "BM-mac", 
+  "Res-mac (WT BM)", 
+  expression("Res-mac ("*italic("Irf8")*""^"-/-"*" BM)")
+)
+
+
+createHeatmapFromGenes(list.diff, normalized_counts)
+createHeatmapFromGenes(list.imm, normalized_counts)
+createHeatmapFromGenes(list.extrac, normalized_counts)
+```
+
+```{r}
+Resupply_BM <- readRDS(paste0(dir.deg, "/Res_Resupply_vs_BM.rds"))
+Sustaining_Resupply <- readRDS(paste0(dir.deg, "/Res_Sustaining_vs_Res_Resupply.rds"))
+```
+
+
+#Volcano
+```{r}
+createVolcano <- function(results, title) {
+    EnhancedVolcano(results,
+                    lab = rownames(results),
+                    x = 'log2FoldChange',
+                    y = 'padj',
+                    title = title,
+                    subtitle = '',
+                    xlab = 'Shrunk log2-fold change',
+                    ylab = expression("-Log"[10]*" P (adjusted)"),
+                    pCutoff = 0.05,
+                    FCcutoff = 0.5,
+                    col = c('grey30', 'forestgreen', 'royalblue', 'red2'))
+    
+    ggsave(paste0(dir.vo, "/Volcano_", gsub(" ", "_", title), ".png"), 
+           width = 6, height = 6, dpi = 600)
+}
+
+createVolcano(Resupply_BM, 'Res-Resupply vs BM')
+createVolcano(Sustaining_Resupply, 'Res-Sustaining vs Res-Resupply')
+
+```
+
+#GSEA
+```{r}
+set.seed(1234)
+
+#exemplary gsea
+eg = bitr(rownames(Resupply_BM), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Mm.eg.db")
+
+row.names(eg) <- eg$SYMBOL
+eg$SYMBOL <- NULL
+
+diff <- merge(as.data.frame(Resupply_BM), eg, by = "row.names")
+
+rownames(diff) <- diff$Row.names
+diff$Row.names <- NULL
+
+fc <- diff$log2FoldChange
+names(fc) <- diff$ENTREZID
+fc <- sort(fc, decreasing = T)
+
+gse <- gseGO(geneList=fc, ont= "BP", minGSSize = 5, pvalueCutoff = 0.05, verbose = TRUE, OrgDb = "org.Mm.eg.db", pAdjustMethod = "BH")
+
+gse@result$Description <- sapply(gse@result$Description, function(term) {
+  paste0(toupper(substr(term, 1, 1)), substr(term, 2, nchar(term)))
+})
+
+results_df <- as.data.frame(gse@result)
+write.csv(results_df, paste0(dir.gse, "/Resupply_BM.csv"), row.names = FALSE)
+
+results_df <- results_df[order(results_df$NES, decreasing = TRUE), ]
+View(results_df)
+
+go_terms <- c("Defense response to bacterium", 
+              "Antigen processing and presentation",
+              "Adaptive immune response", 
+              "Cytokine-mediated signaling pathway", 
+              "Regulation of cell-cell adhesion", 
+              "Leukocyte migration", 
+              "Blood circulation")
+
+options(enrichplot.colours = brewer.pal(11, "RdYlBu"))
+plot1 <- dotplot(gse, showCategory = go_terms, split = ".sign", font = 8, title = "Res-Resupply vs BM")  +
+  facet_grid(.~.sign) +
+  theme(axis.text.y = element_text(size = 12), 
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(size = 12))
+
+print(plot1)
+ggsave(paste0(dir.gse,"/GSEAdot.Resupply_BM.png"), height=3.4, width=4.4)
+
+##############################################################
+
+#Sustaining_Resupply
+eg = bitr(rownames(Sustaining_Resupply), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Mm.eg.db")
+
+row.names(eg) <- eg$SYMBOL
+eg$SYMBOL <- NULL
+
+diff <- merge(as.data.frame(Sustaining_Resupply), eg, by = "row.names")
+
+rownames(diff) <- diff$Row.names
+diff$Row.names <- NULL
+
+fc <- diff$log2FoldChange
+names(fc) <- diff$ENTREZID
+fc <- sort(fc, decreasing = T)
+
+gse <- gseGO(geneList=fc, ont= "BP", minGSSize = 10, pvalueCutoff = 0.05, verbose = TRUE, OrgDb = "org.Mm.eg.db", pAdjustMethod = "BH")
+
+gse@result$Description <- sapply(gse@result$Description, function(term) {
+  paste0(toupper(substr(term, 1, 1)), substr(term, 2, nchar(term)))
+})
+
+results_df <- as.data.frame(gse@result)
+write.csv(results_df, paste0(dir.gse, "/Sustaining_Resupply.csv"), row.names = FALSE)
+
+results_df <- results_df[order(results_df$NES, decreasing = TRUE), ]
+View(results_df)
+
+go_terms <- c("Response to transforming growth factor beta", 
+              "Positive regulation of cell adhesion", 
+              "Response to molecule of bacterial origin", 
+              "Adaptive immune response", 
+              "Chemotaxis", 
+              "Angiogenesis", 
+              "Oxidative phosphorylation")
+
+options(enrichplot.colours = brewer.pal(11, "RdYlBu"))
+plot2 <- dotplot(gse, showCategory = go_terms, split = ".sign", font = 8, title = "Res-Sustaining vs Res-Resupply")  +
+  facet_grid(.~.sign) +
+  theme(axis.text.y = element_text(size = 12), 
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_text(size = 12))
+
+print(plot2)
+ggsave(paste0(dir.gse,"/GSEAdot.Sustaining_Resupply.png"), height=3.4, width=4.4)
+
+combined_plot <- plot1+plot2+plot_layout(ncol=1)
+print(combined_plot)
+ggsave(paste0(dir.gse,"/GSEAdot.both_niches.png"), height=9, width=5.5)
+```
+
+
+#PCA
+```{r}
+rld<-rlogTransformation(dds_n)
+        
+pcaData <- plotPCA(rld, intgroup = c("condition"), returnData=T)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+pcaData$condition <- factor(pcaData$condition, levels = c("BM", "Res_Resupply", "Res_Sustaining"))
+
+ggplot(pcaData, aes(PC1, PC2, color= condition), order=T) +
+  geom_point(size=4) +
+  xlab(paste0("PC 1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC 2: ",percentVar[2],"% variance"))+
+  scale_color_manual(values=custom_colors, labels = c("BM" = "BM", "Res_Resupply" = "Res-Resupply", "Res_Sustaining" = "Res-Sustaining"))+ 
+  theme_minimal() +
+  labs(color = "Condition")+
+  theme(axis.title=element_text(size=18), axis.text=element_text(size=14), legend.text=element_text(size=14), legend.title=element_text(size=14)) 
+
+ggsave(paste0(dir,"/PCAplot.png"), height=3, width=5, dpi=600)
+
+
+
+```
+
