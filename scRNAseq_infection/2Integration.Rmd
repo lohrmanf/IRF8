@@ -1,0 +1,154 @@
+---
+title: "2.2TXnoint"
+output: html_document
+date: '2022-06-09'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2)
+library(openxlsx)
+library(dplyr)
+library(patchwork)
+library(glmGamPoi)
+
+dir <- "Results/2_Integration"
+#dir.create(dir)
+
+s1 =readRDS("Results/1ReadinData/s1.RDS")
+s3 =readRDS("Results/1ReadinData/s3.RDS")
+s4 =readRDS("Results/1ReadinData/s4.RDS")
+s5 =readRDS("Results/1ReadinData/s5.RDS")
+s6 =readRDS("Results/1ReadinData/s6.RDS")
+s7 =readRDS("Results/1ReadinData/s7.RDS")
+s8 =readRDS("Results/1ReadinData/s8.RDS")
+s9 =readRDS("Results/1ReadinData/s9.RDS")
+s10 =readRDS("Results/1ReadinData/s10.RDS")
+s11=readRDS("Results/1ReadinData/s11.RDS")
+s12=readRDS("Results/1ReadinData/s12.RDS")
+
+# Add percent mitochondrial genes per cell
+s1[["percent.mt"]] <- PercentageFeatureSet(s1, pattern = "^mt-")
+s3[["percent.mt"]] <- PercentageFeatureSet(s3, pattern = "^mt-")
+s4[["percent.mt"]] <- PercentageFeatureSet(s4, pattern = "^mt-")
+s5[["percent.mt"]] <- PercentageFeatureSet(s5, pattern = "^mt-")
+s6[["percent.mt"]] <- PercentageFeatureSet(s6, pattern = "^mt-")
+s7[["percent.mt"]] <- PercentageFeatureSet(s7, pattern = "^mt-")
+s8[["percent.mt"]] <- PercentageFeatureSet(s8, pattern = "^mt-")
+s9[["percent.mt"]] <- PercentageFeatureSet(s9, pattern = "^mt-")
+s10[["percent.mt"]] <- PercentageFeatureSet(s10, pattern = "^mt-")
+s11[["percent.mt"]] <- PercentageFeatureSet(s11, pattern = "^mt-")
+s12[["percent.mt"]] <- PercentageFeatureSet(s12, pattern = "^mt-")
+
+
+# Merge the Seurat objects directly
+mac <- merge(s1, y = list(s3, s4, s5, s6, s7, s8, s9, s10, s11, s12), 
+             add.cell.ids = c("s1", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12"))
+
+```
+
+# label conditions
+```{r setup, include=FALSE}
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s1"] <- "A"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s3"] <- "A"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s4"] <- "B"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s5"] <- "B"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s6"] <- "B"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s7"] <- "C"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s8"] <- "C"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s9"] <- "C"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s10"] <- "D"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s11"] <- "D"
+mac@meta.data$condition[(mac@meta.data$orig.ident)=="s12"] <- "D"
+
+mac@meta.data$treatment[(mac@meta.data$condition)=="A"] <- "steady"
+mac@meta.data$treatment[(mac@meta.data$condition)=="B"] <- "infected"
+mac@meta.data$treatment[(mac@meta.data$condition)=="C"] <- "steady"
+mac@meta.data$treatment[(mac@meta.data$condition)=="D"] <- "infected"
+
+mac@meta.data$genotype[(mac@meta.data$condition)=="A"] <- "WT"
+mac@meta.data$genotype[(mac@meta.data$condition)=="B"] <- "WT"
+mac@meta.data$genotype[(mac@meta.data$condition)=="C"] <- "Irf8ko"
+mac@meta.data$genotype[(mac@meta.data$condition)=="D"] <- "Irf8ko"
+```
+
+
+```{r}
+# QC imaging
+VlnPlot(mac, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+ggsave(paste0(dir,"/QC.png"), height=4, width=12, dpi=600)
+
+
+
+VlnPlot(mac, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), log=T, split.by="condition")
+ggsave(paste0(dir,"/QC_condition.png"), height=4, width=12, dpi=600)
+```
+
+
+```{r}
+# QC filtering
+mac <- subset(mac, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000 & nCount_RNA > 500)
+
+mac[["RNA"]] <- JoinLayers(mac[["RNA"]])
+Layers(mac[["RNA"]])
+
+counts_data <- GetAssayData(object = mac, assay = "RNA", layer = "counts")
+subset_cells <- (counts_data["Ly6g", ] < 1) & (counts_data["Cd3e", ] < 1)
+mac <- subset(x = mac, cells = colnames(mac)[subset_cells])
+
+non.gm.genes <- rownames(mac[["RNA"]]$counts[grep("^(Gm\\d|Rpl\\d|Rps\\d)", rownames(mac[["RNA"]]$counts), invert = TRUE), ])
+
+mac <- subset(mac, features = non.gm.genes)
+
+```
+
+
+```{r}
+set.seed(123)
+mac <- NormalizeData(mac)
+mac <- FindVariableFeatures(mac, selection.method = "vst", nfeatures = 3000)
+all.genes <- rownames(mac)
+mac <- ScaleData(mac, features = all.genes, vars.to.regress = "percent.mt")
+
+mac <- RunPCA(mac, features = VariableFeatures(object = mac))
+
+mac <- RunUMAP(mac, dims = 1:20)
+
+DimPlot(mac, reduction = "umap")
+mac
+
+# Find cluster
+mac <- FindNeighbors(mac, dims=1:30)
+mac <- FindClusters(mac,  resolution= 0.6)
+
+DimPlot(mac, reduction = "umap", split.by = "condition", label = TRUE, repel = F)
+
+DimPlot(mac, reduction = "umap", label=TRUE)
+
+#mac$condition <- factor(x = mac$condition, levels = c("A", "B", "C", "D"))
+
+# Save data
+mac <- NormalizeData(mac, normalization.method = "LogNormalize")
+saveRDS(mac, paste0(dir,"/mac.RDS"))
+
+# Visualization
+DimPlot(mac, reduction = "umap", split.by = "condition", label = TRUE, repel = F)
+DimPlot(mac, reduction = "umap", split.by = "orig.ident", label = TRUE, repel = F)
+
+
+ggsave(paste0(dir,"/mac_dim.png"),height=5,width=15)
+
+Cluster.Distribution <- as.data.frame.matrix(prop.table(table(Idents(mac), mac$orig.ident), margin=2))
+Cluster.Distribution <- round(Cluster.Distribution, 4)
+write.xlsx(Cluster.Distribution, paste0(dir,"/mac.xlsx"), rowNames=TRUE)
+
+
+Cluster.numbers <- as.data.frame.matrix(table(Idents(mac), mac$condition), margin=2)
+write.xlsx(Cluster.numbers, paste0(dir,"/Cluster.numbers.xlsx"), rowNames=TRUE)
+
+```
+
+

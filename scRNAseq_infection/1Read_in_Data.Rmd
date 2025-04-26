@@ -1,0 +1,120 @@
+---
+title: "1.ReadinData"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+
+library(Seurat)
+dir <- "Results/1ReadinData"
+#dir.create(dir)
+
+s1 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib1/outs/per_sample_outs/sample1/count/sample_filtered_feature_bc_matrix")
+s1 <- CreateSeuratObject(counts = s1$`Gene Expression`, project = "s1", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s1"),size=length(colnames(x=s1)),replace=TRUE),row.names=colnames(s1))
+s1 = AddMetaData(object=s1, metadata= sample.info, col.name='sample.info')
+table(s1$orig.ident)
+saveRDS(s1, paste0(dir,"/s1.RDS"))
+
+
+s3 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib1/outs/per_sample_outs/sample3/count/sample_filtered_feature_bc_matrix")
+s3 <- CreateSeuratObject(counts = s3$`Gene Expression`, project = "s3", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s3"),size=length(colnames(x=s3)),replace=TRUE),row.names=colnames(s3))
+s3 = AddMetaData(object=s3, metadata= sample.info, col.name='sample.info')
+table(s3$orig.ident)
+saveRDS(s3, paste0(dir,"/s3.RDS"))
+
+s7 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib1/outs/per_sample_outs/sample7/count/sample_filtered_feature_bc_matrix")
+s7 <- CreateSeuratObject(counts = s7$`Gene Expression`, project = "s7", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s7"),size=length(colnames(x=s7)),replace=TRUE),row.names=colnames(s7))
+s7 = AddMetaData(object=s7, metadata= sample.info, col.name='sample.info')
+table(s7$orig.ident)
+saveRDS(s7, paste0(dir,"/s7.RDS"))
+
+s8 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib1/outs/per_sample_outs/sample8/count/sample_filtered_feature_bc_matrix")
+s8 <- CreateSeuratObject(counts = s8$`Gene Expression`, project = "s8", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s8"),size=length(colnames(x=s8)),replace=TRUE),row.names=colnames(s8))
+s8 = AddMetaData(object=s8, metadata= sample.info, col.name='sample.info')
+table(s8$orig.ident)
+saveRDS(s8, paste0(dir,"/s8.RDS"))
+
+s9 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib1/outs/per_sample_outs/sample9/count/sample_filtered_feature_bc_matrix")
+s9 <- CreateSeuratObject(counts = s9$`Gene Expression`, project = "s9", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s9"),size=length(colnames(x=s9)),replace=TRUE),row.names=colnames(s9))
+s9 = AddMetaData(object=s9, metadata= sample.info, col.name='sample.info')
+table(s9$orig.ident)
+saveRDS(s9, paste0(dir,"/s9.RDS"))
+
+s12 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib1/outs/per_sample_outs/sample12/count/sample_filtered_feature_bc_matrix")
+s12 <- CreateSeuratObject(counts = s12$`Gene Expression`, project = "s12", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s12"),size=length(colnames(x=s12)),replace=TRUE),row.names=colnames(s12))
+s12 = AddMetaData(object=s12, metadata= sample.info, col.name='sample.info')
+table(s12$orig.ident)
+saveRDS(s12, paste0(dir,"/s12.RDS"))
+
+```
+
+```{r}
+s4 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib2/outs/per_sample_outs/sample4/count/sample_filtered_feature_bc_matrix")
+s4 <- CreateSeuratObject(counts = s4$`Gene Expression`, project = "s4", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s4"),size=length(colnames(x=s4)),replace=TRUE),row.names=colnames(s4))
+s4 = AddMetaData(object=s4, metadata= sample.info, col.name='sample.info')
+table(s4$orig.ident)
+saveRDS(s4, paste0(dir,"/s4.RDS"))
+
+s5 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib2/outs/per_sample_outs/sample5/count/sample_filtered_feature_bc_matrix")
+s5 <- CreateSeuratObject(counts = s5$`Gene Expression`, project = "s5", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s5"),size=length(colnames(x=s5)),replace=TRUE),row.names=colnames(s5))
+s5 = AddMetaData(object=s5, metadata= sample.info, col.name='sample.info')
+table(s5$orig.ident)
+saveRDS(s5, paste0(dir,"/s5.RDS"))
+
+s6 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib2/outs/per_sample_outs/sample6/count/sample_filtered_feature_bc_matrix")
+s6 <- CreateSeuratObject(counts = s6$`Gene Expression`, project = "s6", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s6"),size=length(colnames(x=s6)),replace=TRUE),row.names=colnames(s6))
+s6 = AddMetaData(object=s6, metadata= sample.info, col.name='sample.info')
+table(s6$orig.ident)
+saveRDS(s6, paste0(dir,"/s6.RDS"))
+
+s10 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib2/outs/per_sample_outs/sample10/count/sample_filtered_feature_bc_matrix")
+s10 <- CreateSeuratObject(counts = s10$`Gene Expression`, project = "s10", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s10"),size=length(colnames(x=s10)),replace=TRUE),row.names=colnames(s10))
+s10 = AddMetaData(object=s10, metadata= sample.info, col.name='sample.info')
+table(s10$orig.ident)
+saveRDS(s10, paste0(dir,"/s10.RDS"))
+
+s11 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib2/outs/per_sample_outs/sample11/count/sample_filtered_feature_bc_matrix")
+s11 <- CreateSeuratObject(counts = s11$`Gene Expression`, project = "s11", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("s11"),size=length(colnames(x=s11)),replace=TRUE),row.names=colnames(s11))
+s11 = AddMetaData(object=s11, metadata= sample.info, col.name='sample.info')
+table(s11$orig.ident)
+saveRDS(s11, paste0(dir,"/s11.RDS"))
+
+
+
+
+```
+
+
+
+```{r}
+lib1 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/Lib1/outs/multi/count/raw_feature_bc_matrix")
+lib1 <- CreateSeuratObject(counts = lib1$`Gene Expression`, project = "lib1", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("lib1"),size=length(colnames(x=lib1)),replace=TRUE),row.names=colnames(lib1))
+lib1 = AddMetaData(object=lib1, metadata= sample.info, col.name='sample.info')
+table(lib1$orig.ident)
+saveRDS(lib1, paste0(dir,"/lib1.RDS"))
+
+lib2 <- Read10X(data.dir="Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter big data/Florens/scRNA_wt_irf_bcg/lib2/outs/multi/count/raw_feature_bc_matrix")
+lib2 <- CreateSeuratObject(counts = lib2$`Gene Expression`, project = "lib2", min.cells = 3, min.features = 200)
+sample.info = data.frame(sample = sample(x=c("lib2"),size=length(colnames(x=lib2)),replace=TRUE),row.names=colnames(lib2))
+lib2 = AddMetaData(object=lib2, metadata= sample.info, col.name='sample.info')
+table(lib2$orig.ident)
+saveRDS(lib2, paste0(dir,"/lib2.RDS"))
+
+
+```
+
+

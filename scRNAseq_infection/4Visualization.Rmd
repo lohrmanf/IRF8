@@ -1,0 +1,491 @@
+---
+title: "Visualization"
+output: html_document
+date: "2023-01-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+library(patchwork)
+library(cowplot)
+library(data.table)
+library(tidyverse)
+library(Nebulosa)
+library(dittoSeq)
+library(readxl)
+library(ggtext)
+
+
+dir <- "Results/visualization"
+dir.neb <- "Results/visualization/Nebulosa"
+dir.feat <- "Results/visualization/Feature"
+dir.gr <- "Results/visualization/grouped_expression"
+dir.v <- "Results/visualization/Violin"
+
+mac <- readRDS("Results/2_Integration/mac.RDS")
+DefaultAssay(mac) <- "RNA"
+mac<- NormalizeData(mac, normalization.method = "LogNormalize") 
+steady <- subset(x = mac, subset = treatment=="steady")
+infected <- subset(x = mac, subset = treatment=="infected")
+wt <- subset(x = mac, subset = genotype=="WT")
+irf8 <- subset(x = mac, subset = genotype=="Irf8ko")
+inf.wt<- subset(x = infected, subset = genotype=="WT")
+inf.irf<- subset(x = infected, subset = genotype=="Irf8ko")
+
+plot_labels <- c("WT", " WT infected", "Irf8ko", " Irf8ko infected")
+mac$condition <- factor(mac$condition, levels = c("A", "B", "C", "D"), labels = plot_labels)
+
+infected$genotype <- factor(infected$genotype, levels = c("WT", "Irf8ko"))
+
+colors<- c("#a6cee3", "#1f78b4", "#b2df8a", "#33a02c", "#e31a1c", "#ff7f00", "#cab2d6", "#6a3d9a", "#ffff99", "#b15928", "#fb9a99", "#005F6A", "#FF70AB","#640D6B","#A0DEFF","#E65C19", "#F8D082")
+
+```
+
+#A: WT-steady
+#B: WT-infected
+#C: Irf-steady
+#D: Irf-infected
+
+
+#genelists
+```{r}
+total.gene.list <- rownames(mac[["RNA"]])
+
+
+genes <- c("Nos2", "Tnf", "Il1b", "Sell", "Slamf7", "Ly6c2", "Fcgr1", "Apoe", "Arg1", "Ptges", "Slpi", "Fpr2", "Vcam1", "Ccl12", "Aif1", "H2-Eb1", "Cd74", "Cxcl10", "Fos","Csf1r", "Csf2rb", "Irf8", "Irf4", "Nlrp3", "Itgax", "Itgam", "Ccr7", "Mmp12", "Ifngr1", "Csf1", "Ccl2", "Ccl24", "Cd163", "Enpp2", "Nrg1", "Vcam1", "Ly86", "Ccl12", "Ccl8", "C1qb", "Plac8", "Prxl2b", "Aif1", "C1qc", "C1qa", "Fgl2", "Ms4a6b", "Ms4a6c", "Plbd1", "Apoe", "H2-Ab1", "H2-Eb1", "Pld4", "Clec4a3", "Dusp2", "Ms4a4c", "Cxcl10", "Fabp5", "Slc30a1", "Ptpn18", "H2-Aa", "Pltp", "Gpr65", "Iigp1", "Ifitm2", "Cd74", "Lst1", "H2-DMb1", "Cytip", "H2-Ab1", "Ifi30", "Epsti1", "Isy1", "Smchd1", "Id3", "Cd300a", "Ms4a7", "Ly6e", "Epb41", "H2-DMa", "Thbs1", "Il18bp", "Got1", "Fos", "Ifi209", "Mki67")
+
+genes2 <- c("Msx3", "Arg1", "Tmem8", "Ccl12", "Ms4a4a", "Cblb", "Fabp5", "Ccl24", "Pdia4", "Gja1", "Snx6", "Ctsl", "Nt5dc2", "Csta2", "Fn1", "Cd81", "Nsmce1", "Clcn5", "Snx5", "Dock4", "Arap2", "Xdh", "Scd2", "Hebp1", "Glrx", "Galnt2", "Mrc1", "Wdfy2", "Slc7a2", "Maf", "Secisbp2l", "Vrk1", "Ccl8", "Anxa6", "Ap2s1", "Ms4a6d", "Ms4a6c", "Mmp14", "Lgals1", "Il1rap", "Cd200r1", "Tspan3", "Ap2a2", "Dab2", "Lhfpl2", "Adam8", "Ednrb", "Sdf2l1", "Clta", "Aimp1", "Itpr2", "Gpnmb", "Tnf", "Ccrl2", "Ccl3", "Bnip3l", "Chil1", "Syngr1", "Cd24a", "Hcar2", "Irak2", "Slc31a2", "Il1a", "Sgms2", "Klf2", "Pdcd1lg2", "Msrb1", "F10", "Gadd45b", "Cd9", "Atf7ip", "Sema4d", "Atp6v0d2", "Cxcl2", "Acod1", "Dusp2", "Il1rn", "Hilpda", "Rgcc", "C3", "Gdf15", "Nfkbib", "Mpeg1", "Ncf4", "Txnip", "Icam1", "Cd300c2", "Cd300a", "Bcl2a1b", "Clec4d", "Gla", "Tnip1", "Clec4e", "Ccl4", "Arg2", "Resf1", "Card19", "Pik3ap1", "Cd14", "Nlrp3", "Uchl1", "Ccr7", "Il4i1", "H2-DMb2", "Edil3", "Sema7a", "Cd200", "Calcrl", "Socs2", "Dcstamp", "Satb1", "Tbc1d4", "Ckb", "Pgf",  "Cst7", "Fnbp1l", "Ktn1", "Ddt", "Myo1b", "Myo10", "Mmp12", "Zbtb18", "H2-Eb1", "Casp6", "St8sia4", "Pmvk", "H2-Ab1", "Hsd17b10", "Sirpb1c", "H2-Aa", "Tspan13", "Fam177a", "Cd74", "Cytip", "Pla2g12a", "Ifi30", "Phlpp1",  "Oaf", "Snhg15", "Grk3", "Tsc22d1", "Runx2", "Cdh1", "H2-DMb1", "Clec4n", "Acadm", "Samsn1")
+
+thermo <- c("Trpm2", "Trpv4", "Trpm8")
+ 
+```
+
+
+```{r}
+p <- DimPlot(mac, reduction = "umap", order = F, split.by = "condition", raster = F, label = T, pt.size = 0.8, label.size = 3.5, cols = colors) +
+  scale_x_continuous(name = "UMAP 1") +
+  scale_y_continuous(name = "UMAP 2") +
+  theme(
+    strip.text.x = element_blank(),  # Remove the facet labels (titles)
+    axis.title = element_text(size = 10),  
+    axis.text = element_text(size = 10),
+    element_text(family = "Arial")
+  ) + 
+  NoLegend() + 
+  facet_wrap(~condition, nrow = 2)
+
+print(p)
+
+ggsave(paste0(dir,"/Clusters.mac.png"), height=6, width=4.5, dpi=600)
+
+
+
+plot_labels <- c("WT1", "WT2", "WT_inf1", "WT_inf2", "WT_inf3", "Irf8ko1", "Irf8ko2", "Irf8ko3", "Irf8ko_inf1","Irf8ko_inf2", "Irf8ko_inf3")
+mac@meta.data$orig.ident <- as.factor(mac@meta.data$orig.ident)
+mac@meta.data$orig.ident <- factor(mac@meta.data$orig.ident, levels = c("s1", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12"))
+levels_orig.ident <- levels(mac@meta.data$orig.ident)
+names(plot_labels) <- levels_orig.ident
+
+p2 <- DimPlot(mac, reduction = "umap", order=F, split.by="orig.ident", raster=F, label = T, pt.size=0.8, cols=colors)+
+  scale_x_continuous(name="UMAP 1")+
+  scale_y_continuous(name="UMAP 2")+
+  theme(strip.text.x = element_text(size = 18, face = "plain"))+ 
+  NoLegend()+
+  facet_wrap(~orig.ident, labeller = as_labeller(plot_labels))
+
+p2
+ggsave(paste0(dir,"/Clusters.mac_ind.png"), height=12, width=20, dpi=600)
+```
+
+
+```{r}
+Idents(mac) <- "condition"
+VlnPlot(mac, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), log=T, split.by="condition")
+
+
+ggsave(paste0(dir,"/QC_condition.png"), height=4, width=12, dpi=600)
+```
+
+
+
+
+```{r}
+generate_feature_plots <- function(infected, genes) {
+  for (gene in genes) {
+    p <- FeaturePlot(infected, features = c(gene), split.by = "genotype", pt.size = 0.5, order = T)
+    ggsave(filename = paste0(dir.feat, "/", gene, ".png"), plot = p, height = 3, width = 6, dpi = 600)
+  }
+}
+
+generate_feature_plots(infected, thermo)
+```
+
+#Nebulosa in infected
+```{r}
+generate_Nebulosa_plots <- function(infected, genes) {
+  for (gene in genes) {
+    # Generate a density plot for the specified gene
+    p <- plot_density(infected, features = c(gene), joint = FALSE, size = 0.5, pal = "viridis") +
+      facet_wrap(~ infected$genotype) + # Keep the facet wrap
+      ggtitle(gene) +
+      theme(strip.text.x = element_blank(),
+        strip.background = element_blank(),  
+            strip.text = element_text(face = "plain", size = 16))
+    
+    # Add axis labels and adjust title styling
+    p <- p +
+      xlab("UMAP 1") + 
+      ylab("UMAP 2") +
+      theme(plot.title = element_text(face = "italic", size = 16))
+    
+    # Save the plot
+    ggsave(filename = paste0(dir.neb, "/", gene, "_split.png"), plot = p, height = 3, width = 6, dpi = 600)
+  }
+}
+
+generate_Nebulosa_plots(infected, genes)
+
+
+```
+
+#Nebulosa in all
+```{r}
+generate_Nebulosa_plots <- function(mac, genes) {
+  
+  for (gene in genes) {
+    # Generate a density plot for the specified gene
+    p <- plot_density(mac, features = c(gene), joint=FALSE, size = 0.5, pal="viridis") +
+      facet_wrap(~ mac$condition) +
+      ggtitle(gene)+
+      theme(strip.background = element_blank(),  
+        strip.text = element_text(face = "plain", size=16))
+    p <- p + 
+      xlab("UMAP 1") + 
+      ylab("UMAP 2")+
+      theme(plot.title = element_text(face = "italic", size=16))
+    ggsave(filename = paste0(dir.neb, "/", gene, "_split_all.png"), plot = p, height = 6, width = 6, dpi = 600)
+  }
+}
+
+generate_Nebulosa_plots(mac, genes)
+```
+
+#Dotplot_genes
+```{r}
+dotplot.genes <- c( "S100a9", "Asprv1",  #I9
+                    "Egr1", "Cd209d", "Folr2", #I8
+                    "Fgfr1", #W8
+                    "Ccl17", "Flt1", #I7
+                    "Clec4b1", "Lyz1", #W7
+                    "Mmp12", "Apoe", #I6
+                    "Ccl7", "Mafb", #W6
+                    "Ccr7", "Cd200", #I5
+                    "Tnf", "Ccl3", "Csf1", #I4
+                    "Ccl12", #I3
+                    "Nrg1", "Aif1", #w2
+                    "Igf1", #I1
+                    "Ccl2", "Cd163", "Il10", #w1
+                    "Slpi", "Fpr2", "Ly6c2" #w0
+                    )
+
+
+```
+
+
+#DotPlot infected
+```{r}
+#subset clusters to display
+clusters_WT <- c("0", "1", "2", "6", "7", "8")
+clusters_irf <- c("1", "3", "4", "5", "6", "7", "8", "9")
+
+infected$combined_id <- paste(infected$genotype, infected$seurat_clusters, sep = "   ")
+unique(infected$combined_id)
+
+combined_id_WT <- paste("WT", clusters_WT,  sep = "   ")
+combined_id_irf <- paste("Irf8ko", clusters_irf, sep = "   ")
+
+DotPlot_clusters <- subset(infected, subset = combined_id %in% c(combined_id_WT, combined_id_irf))
+head(DotPlot_clusters$combined_id)
+
+
+Idents(DotPlot_clusters) <- DotPlot_clusters$combined_id
+
+levels(DotPlot_clusters) <- c("WT   0",   "WT   1",  "WT   2",          "WT   6",   "WT   7",    "WT   8", "Irf8ko   1", "Irf8ko   3",  "Irf8ko   4", "Irf8ko   5", "Irf8ko   6", "Irf8ko   7", "Irf8ko   8", "Irf8ko   9")
+```
+
+
+```{r}
+
+# Plot the subsetted Seurat object
+DotPlot(DotPlot_clusters, split.by= "combined_id", features = dotplot.genes, scale = T, cols = c("RdYlBu")) +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="white"), title="Percent Expression")) + 
+  xlab('') +  
+  ylab('')+ 
+  RotatedAxis() +
+  scale_y_discrete(limits=rev)+ 
+  scale_x_discrete(limits = rev, labels = function(x) parse(text = paste0("italic('", x, "')"))) +
+  theme(axis.text.y=element_text(size=14, face="bold"),axis.title = element_text(size=14),
+  panel.background = element_blank(),
+  panel.border = element_rect(fill = NA),
+  text = element_text(size = 12),
+  panel.grid.major.x = element_line(color = "grey80"),
+  panel.grid.major.y = element_line(color = "grey80") )
+
+ggsave(paste0(dir, "/DP_infected.png"), height = 4, width = 10, dpi = 600)
+```
+
+
+
+```{r}
+cluster.display <- c("0", "1", "2", "3", "4", "5", "6")
+DotPlot(infected, split.by= "genotype", features = genes, scale = T, cols = c("RdYlBu"), idents = cluster.display) +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="white"))) + 
+  xlab('Gene') +  
+  ylab('Cluster')+ 
+  RotatedAxis() +
+  scale_y_discrete(limits=rev)+ 
+  scale_x_discrete(limits=rev) +
+  theme(axis.text.y=element_text(size=14, face="bold"),axis.title = element_text(size=14),
+  panel.background = element_blank(),
+  panel.border = element_rect(fill = NA),
+  text = element_text(size = 12),
+  panel.grid.major.x = element_line(color = "grey80"),
+  panel.grid.major.y = element_line(color = "grey80") )
+ggsave(paste0(dir,"/DP_infected.png"), height=4, width=10, dpi=600)
+
+```
+
+
+
+
+#dittoBarPlot
+```{r}
+dittoBarPlot(object = mac, var = "condition", group.by = "seurat_clusters", retain.factor.levels=T, color.panel = colors) +
+  labs(title="Relative cluster abundance", x ="Cluster", y = "Fraction of cells")       
+ggsave(paste0(dir,"/ditto_condition.png"), height=5, width=10, dpi=600)
+
+dittoBarPlot(object = mac, var = "seurat_clusters", group.by = "condition", retain.factor.levels=T, color.panel = colors) +
+  labs(title="Relative cluster abundance", x ="Cluster", y = "Fraction of cells") 
+ggsave(paste0(dir,"/dittoseq_cluster.png"), height=5, width=3, dpi=600)
+
+#dittoPlotVarsAcrossGroups(object = mac, vars=c("Ly6c2", "Ccr2"), group.by="condition", color.panel = colors)
+
+
+#ggsave(paste0(dir,"/dittoseq_meanZ.png"), height=5, width=3, dpi=600)
+```
+
+#add aggregated count for each file in gene_lists folder to mac
+```{r}
+# Function to process an Excel file of genes and update a Seurat object metadata
+process_genes <- function(file_path, seurat_object, total_gene_list) {
+  file_name <- tools::file_path_sans_ext(basename(file_path))
+  slot_name <- gsub("\\W", "", file_name)  # Remove any non-word characters
+  
+  gene_list <- read_excel(file_path)
+  genes <- gene_list$Symbol
+  
+  genes <- intersect(total_gene_list, genes)
+  
+  if (length(genes) > 0) {
+    data_matrix <- GetAssayData(seurat_object, assay = "RNA", layer = "data")[genes, ]
+    aggregated_expression <- colSums(as.matrix(data_matrix))
+    seurat_object[[slot_name]] <- aggregated_expression
+  } else {
+    message("No intersecting genes found for file: ", file_path)
+    slot_name <- NULL
+  }
+  
+  return(list(seurat_object = seurat_object, slot_name = slot_name))
+}
+
+# Function to process all Excel files in a directory and store features as metadata
+process_all_gene_lists <- function(directory, seurat_object, total_gene_list) {
+  files <- list.files(directory, pattern = "\\.xlsx$", full.names = TRUE)
+  files <- files[!grepl("^~\\$", basename(files))]
+  
+  new_features <- list()
+
+  for (file in files) {
+    message("Processing: ", file)
+    result <- process_genes(file, seurat_object, total_gene_list)
+    seurat_object <- result$seurat_object
+    if (!is.null(result$slot_name)) {
+      new_features <- c(new_features, result$slot_name)
+    }
+  }
+  
+  return(list(seurat_object = seurat_object, new_features = new_features))
+}
+
+result <- process_all_gene_lists("gene_lists", mac, total.gene.list)
+mac <- result$seurat_object
+new_features <- result$new_features
+```
+
+#Nebulosa plots
+```{r}
+for (feature in new_features) {
+  p <- plot_density(mac, features = feature)+
+      facet_wrap(~ mac$condition) +
+      ggtitle(feature)+
+      theme(strip.background = element_blank(),  
+        strip.text = element_text(face = "plain", size=16))
+    p <- p + 
+      xlab("UMAP 1") + 
+      ylab("UMAP 2") +
+      theme(plot.title = element_text(face = "italic", size=16))
+    ggsave(filename = paste0(dir.gr, "/", feature, "_split_all.png"), plot = p, height = 6, width = 6, dpi = 600)
+}
+
+```
+
+#feature plots
+```{r}
+for (feature in new_features) {
+  p <- FeaturePlot(mac, features = feature, split.by = "condition", pt.size=0.8)+
+      theme(strip.background = element_blank(),  
+        strip.text = element_text(face = "plain", size=16))
+    p <- p + 
+      xlab("UMAP 1") + 
+      ylab("UMAP 2")
+    ggsave(filename = paste0(dir.gr, "/", feature, "_split_all.png"), plot = p, height = 3, width = 12, dpi = 600)
+}
+
+```
+
+```{r}
+FeatureScatter(inf.wt, feature1 = "Nos2", feature2 = "Arg1")
+?FeatureScatter
+cl0 <- subset(inf.wt, idents = "0")
+FeatureScatter(cl0, feature1 = "Nos2", feature2 = "Arg1")
+```
+
+```{r}
+library(flowCore)
+library(ggcyto)
+
+expr_data <- FetchData(cl0, vars = c("Nos2", "Arg1"))
+
+flow_frame <- flowFrame(as.matrix(expr_data))
+
+flow_frame@description$GUID <- " "
+
+p <- ggcyto(flow_frame, aes(x = Nos2, y = Arg1)) +
+  geom_hex(bins = 100) +
+  theme_minimal() +
+  labs(
+  title = "Nos2 vs Arg1 - Cluster 0",
+  x = "Nos2 Expression",
+  y = "Arg1 Expression"
+)+
+  theme(plot.subtitle = element_blank(), plot.caption = element_blank())
+
+print(p)
+# Define gates
+gate1 <- rectangleGate("Nos2" = c(0.5, 4.5), "Arg1" = c(0.5, 5))
+gate2 <- rectangleGate("Nos2" = c(0.5, 4.5), "Arg1" = c(-0.1, 0.1))
+gate3 <- rectangleGate("Nos2" = c(-0.1, 0.1), "Arg1" = c(0.5, 5))
+
+
+p <- p + geom_gate(gate1) + geom_gate(gate2) + geom_gate(gate3)
+
+p <- p + geom_stats()
+
+print(p)
+
+ggsave(paste0(dir, "/Nos2_vs_Arg1_density.png"), dpi=600, height=4, width=5)
+
+```
+
+
+
+
+```{r}
+#myeloid<- NormalizeData(myeloid, normalization.method = "LogNormalize")
+
+
+p1<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="Antigen_presentation", cols=c("cornflowerblue", "dark red"), pt.size = 0, log=T)+labs(title="Antigen processing/presentation", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+theme(legend.position="none")+geom_boxplot(width=.1, fill="white")
+p1<- p1+stat_compare_means(comparisons = list(c("0","1"), c("0","2")), label = "p.signif")
+p1
+ggsave(paste0(dir,"/Antigen_presentation_sign.png"), height=5, width=10, dpi=600)
+
+p1inf<- VlnPlot(inf, features="Antigen_presentation", cols=mycolors, pt.size = 0, log=T)+labs(title="Antigen processing/presentation", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+theme(legend.position="none")+geom_boxplot(width=.1, fill="white")
+p1inf<- p1inf+stat_compare_means(ref.group="0", label = "p.signif")
+p1inf
+ggsave(paste0(dir,"/Antigen_presentation_sign_inf.png"), height=5, width=10, dpi=600)
+
+p1ctrl<- VlnPlot(ctrl, features="Antigen_presentation", cols=mycolors, pt.size = 0, log=T)+labs(title="Antigen processing/presentation", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+theme(legend.position="none")+geom_boxplot(width=.1, fill="white")
+p1ctrl<- p1inf+stat_compare_means(ref.group="0", label = "p.signif")
+p1ctrl
+ggsave(paste0(dir,"/Antigen_presentation_sign_ctrl.png"), height=5, width=10, dpi=600)
+
+
+p2<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="ROS", cols=c("cornflowerblue", "dark red"), pt.size = 0,log=T) +labs(title="ROS", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+geom_boxplot(width=.1, fill="white") +theme(legend.position="none")
+ggsave(paste0(dir,"/ROS.png"), height=5, width=10, dpi=600)
+
+p3<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="Inflammasome", cols=c("cornflowerblue", "dark red"), pt.size = 0, log=T)+labs(title="Inflammasome", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+geom_boxplot(width=.1, fill="white") +theme(legend.position="none")
+ggsave(paste0(dir,"/Inflammasome.png"), height=5, width=10, dpi=600)
+
+p4<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="Phagocytosis", cols=c("cornflowerblue", "dark red"), pt.size = 0, log=T)+labs(title="Phagocytosis", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+geom_boxplot(width=.1, fill="white") +theme(legend.position="right")
+ggsave(paste0(dir,"/Phagocytosis.png"), height=5, width=10, dpi=600)
+
+p5<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="Tissue_remodeling", cols=c("cornflowerblue", "dark red"), pt.size = 0, log=T)+labs(title="Tissue remodeling", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+geom_boxplot(width=.1, fill="white") +theme(legend.position="none")
+ggsave(paste0(dir,"/Tissue_remodeling.png"), height=5, width=10, dpi=600)
+
+p1+p2+p3+p5+p4 + plot_layout(ncol = 2)
+ggsave(paste0(dir,"/Vln-aggregated-split.png"), height=9, width=10, dpi=600)
+```
+
+
+
+```{r}
+table(wt$treatment)
+Idents(wt) <- "seurat_clusters"  
+
+wt_cluster1 <- subset(wt, idents = 1)
+wt_cluster1$treatment <- factor(wt_cluster1$treatment, levels = c("steady", "infected"))
+
+wt_cluster7 <- subset(wt, idents = 7)
+wt_cluster7$treatment <- factor(wt_cluster7$treatment, levels = c("steady", "infected"))
+```
+
+```{r}
+violin_per_cluster <- function(subset_seurat_obj, title, genes) {
+  
+
+  for (gene in genes) {
+    
+    if (gene %in% rownames(subset_seurat_obj)) {
+      
+      # Create the violin plot
+      plot <- VlnPlot(subset_seurat_obj, features = gene, group.by = "treatment", cols = custom_colors, pt.size = 0) + 
+        NoLegend() + 
+        theme(axis.title.x = element_blank())
+      
+      # Save the plot
+      ggsave(filename = paste0(dir.v, "/",title, gene, "_violin.png"), plot = plot, height = 3, width = 2, dpi = 600)
+      
+  }
+  }
+}
+```
+
+```{r}
+genes_to_plot <- c("Gdf15", "Slpi", "Hif1a", "H2-Ab1", "Enpp2", "Cd274", "Fos", "Irf8", "Ctsb", "Bhlhe40")
+
+custom_colors <- c("steady" = "#1f78b4", "infected" = "black")
+custom_colors <- c("steady" = "#6a3d9a", "infected" = "black")
+
+violin_per_cluster(subset_seurat_obj = wt_cluster1, title="wt_cl1", genes = genes_to_plot)
+
+violin_per_cluster(subset_seurat_obj = wt_cluster7, title="wt_cl7", genes = genes_to_plot)
+
+```
+

@@ -1,0 +1,308 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-02-09"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(CellChat)
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+library(pander)
+library(ComplexHeatmap)
+library(ggplotify)
+library(gtable)
+
+options(stringsAsFactors = FALSE)
+
+dir <- "Results/CellChat"
+
+colors<- c("#a6cee3", "#1f78b4", "#b2df8a", "#33a02c", "#e31a1c", "#ff7f00", "#cab2d6", "#6a3d9a", "#ffff99", "#b15928", "#fb9a99", "#005F6A", "#FF70AB","#640D6B","#A0DEFF","#E65C19", "#F8D082")
+names(colors) <- as.character(0:(length(colors) - 1))
+```
+
+
+```{r}
+mac <- readRDS("Results/2_Integration/mac.RDS")
+DefaultAssay(mac) <- "RNA"
+mac<- NormalizeData(mac, normalization.method = "LogNormalize") 
+infected <- subset(x = mac, subset = treatment=="infected")
+inf.wt<- subset(x = infected, subset = genotype=="WT")
+inf.irf<- subset(x = infected, subset = genotype=="Irf8ko")
+
+infected$genotype <- factor(infected$genotype, levels = c("WT", "Irf8ko"))
+
+
+
+
+inf.wt.sub <- subset(x = inf.wt, idents = c(0, 1, 2, 6, 7, 8))
+
+inf.wt.sub <- RenameIdents(object = inf.wt.sub, 
+                           '0' = 'w0', 
+                           '1' = 'w1', 
+                           '2' = 'w2', 
+                           '6' = 'w6', 
+                           '7' = 'w7', 
+                           '8' = 'w8')
+inf.wt.sub$cellchat_clusters <- Idents(inf.wt.sub)
+
+cellchat.wt <- createCellChat(object = inf.wt.sub, group.by = "cellchat_clusters")
+
+
+inf.irf.sub <- subset(x = inf.irf, idents = c(1, 3, 4, 5, 6, 7, 8, 9))
+inf.irf.sub <- RenameIdents(object = inf.irf.sub, 
+                           '1' = 'i1', 
+                           '3' = 'i3',
+                           '4' = 'i4',
+                           '5' = 'i5',
+                           '6' = 'i6', 
+                           '7' = 'i7', 
+                           '8' = 'i8',
+                           '9' = 'i9')
+inf.irf.sub$cellchat_clusters <- Idents(inf.irf.sub)
+cellchat.irf <- createCellChat(object = inf.irf.sub, group.by = "cellchat_clusters")
+
+CellChatDB <- CellChatDB.mouse 
+showDatabaseCategory(CellChatDB)
+
+CellChatDB.use <- CellChatDB
+cols.wt <- 
+cols.irf <- 
+
+#WT
+cellchat.wt@DB <- CellChatDB.use
+cellchat.wt <- subsetData(cellchat.wt) 
+cellchat.wt <- identifyOverExpressedGenes(cellchat.wt)
+cellchat.wt <- identifyOverExpressedInteractions(cellchat.wt)
+cellchat.wt <- computeCommunProb(cellchat.wt)
+cellchat.wt <- filterCommunication(cellchat.wt, min.cells = 10)
+cellchat.wt <- computeCommunProbPathway(cellchat.wt)
+cellchat.wt <- aggregateNet(cellchat.wt)
+groupSize.wt <- as.numeric(table(cellchat.wt@idents))
+
+saveRDS(cellchat.wt, file = paste0(dir, "/cellchat.wt.RDS"))
+
+
+#Irf8ko
+cellchat.irf@DB <- CellChatDB.use
+cellchat.irf <- subsetData(cellchat.irf) 
+cellchat.irf <- identifyOverExpressedGenes(cellchat.irf)
+cellchat.irf <- identifyOverExpressedInteractions(cellchat.irf)
+cellchat.irf <- computeCommunProb(cellchat.irf)
+cellchat.irf <- filterCommunication(cellchat.irf, min.cells = 10)
+cellchat.irf <- computeCommunProbPathway(cellchat.irf)
+cellchat.irf <- aggregateNet(cellchat.irf)
+groupSize.irf <- as.numeric(table(cellchat.irf@idents))
+
+saveRDS(cellchat.irf, file = paste0(dir, "/cellchat.irf.RDS"))
+```
+
+```{r}
+readRDS()
+```
+
+
+```{r}
+#overview vizualization
+groupSize <- as.numeric(table(cellchat.wt@idents))
+
+par(mfrow = c(1,1), xpd=TRUE)
+c1<- netVisual_circle(cellchat.wt@net$count,color.use =colors, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+c2<- netVisual_circle(cellchat.wt@net$weight, color.use =colors, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+groupSize <- as.numeric(table(cellchat.irf@idents))
+i1<- netVisual_circle(cellchat.irf@net$count,color.use =colors, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+i2<- netVisual_circle(cellchat.irf@net$weight, color.use =colors, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+
+mat <- cellchat.wt@net$weight
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, color.use =colors, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+
+```
+
+
+```{r}
+#visualization
+#colors WT
+color_names <- c("0", "1", "2", "6", "7", "8")
+wt_colors <- colors[color_names]
+names(wt_colors) <- names(table(cellchat.wt@idents))
+
+par(mfrow=c(1,1))
+cellchat.wt@netP$pathways
+
+#compute centrality scores
+cellchat.wt <- netAnalysis_computeCentrality(cellchat.wt, slot.name = "netP")
+
+#create heatmap
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat.wt, pattern = "outgoing", color.use =wt_colors, color.heatmap = "YlOrRd", font.size = 12, font.size.title = 14, width = 3.4, height = 10)
+ht1
+
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat.wt, pattern = "incoming", color.use =wt_colors, color.heatmap = "YlOrRd", font.size = 12, font.size.title = 14, width = 3.4, height = 10)
+p<- ht1 + ht2
+p
+
+pdf(file="Results/CellChat/heatmap_wt.pdf")
+plot(p)
+dev.off()
+```
+
+```{r}
+plot_and_save_signaling <- function(cellchat_obj, pw) {
+  # Loop over each signaling term in the provided list
+  for (signaling in pw) {
+    
+    # Generate the signaling network plot
+    plot <- netVisual_aggregate(
+      cellchat_obj, 
+      color.use = wt_colors,      
+      signaling = signaling,      
+      layout = "chord", 
+      vertex.label.cex = 2.6
+    )
+    
+    # Define the filename with the signaling name and "_wt" suffix
+    file_name <- paste0("Results/CellChat/", signaling, "_wt.pdf")
+    
+    # Save the plot to a PDF file
+    pdf(file = file_name)
+    print(plot)  # Print the plot to output it to the PDF
+    dev.off()
+    
+    # Optional: Print message to console
+    cat("Saved plot for", signaling, "to", file_name, "\n")
+  }
+}
+```
+
+```{r}
+pw <- cellchat.wt@netP$pathways
+
+plot_and_save_signaling(cellchat.wt, pw)
+```
+
+```{r}
+#relative contributions
+CCL<- netAnalysis_contribution(cellchat.wt, signaling = "CCL", font.size = 12, font.size.title = 14)
+pairLR.CCL <- extractEnrichedLR(cellchat.wt, signaling = "CCL", geneLR.return = FALSE)
+pairLR.CCL
+pdf(file="Results/CellChat/ctrl/CCL_contribution.pdf")
+plot(CCL)
+dev.off()
+
+
+ICAM<- netAnalysis_contribution(cellchat.wt, signaling = "ICAM", font.size = 12, font.size.title = 14)
+pairLR.ICAM <- extractEnrichedLR(cellchat.wt, signaling = "ICAM", geneLR.return = FALSE)
+pairLR.ICAM
+pdf(file="Results/CellChat/ICAM_contribution_wt.pdf")
+plot(ICAM)
+dev.off()
+
+GALECTIN<- netAnalysis_contribution(cellchat.wt, signaling = "GALECTIN", font.size = 12, font.size.title = 14)
+pairLR.GALECTIN <- extractEnrichedLR(cellchat.wt, signaling = "GALECTIN", geneLR.return = FALSE)
+pairLR.GALECTIN
+pdf(file="Results/CellChat/GALECTIN_contribution_wt.pdf")
+plot(GALECTIN)
+dev.off()
+
+
+```
+
+
+```{r}
+#visualization irf
+#colors irf
+
+color_names <- c("1", "3", "4", "5", "6", "7", "8", "9")
+irf_colors <- colors[color_names]
+names(irf_colors) <- names(table(cellchat.irf@idents))
+
+par(mfrow=c(1,1))
+cellchat.irf@netP$pathways
+
+#compute centrality scores
+cellchat.irf <- netAnalysis_computeCentrality(cellchat.irf, slot.name = "netP")
+
+#create heatmap
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat.irf, pattern = "outgoing", color.use =irf_colors, color.heatmap = "YlOrRd", font.size = 12, font.size.title = 14, width = 4.4, height = 10)
+ht1
+
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat.irf, pattern = "incoming", color.use =irf_colors, color.heatmap = "YlOrRd", font.size = 12, font.size.title = 14, width = 4.4, height = 10)
+p<- ht1 + ht2
+p
+
+pdf(file="Results/CellChat/heatmap_irf.pdf")
+plot(p)
+dev.off()
+```
+
+```{r}
+plot_and_save_signaling <- function(cellchat_obj, pw) {
+  # Loop over each signaling term in the provided list
+  for (signaling in pw) {
+    
+    # Generate the signaling network plot
+    plot <- netVisual_aggregate(
+      cellchat_obj, 
+      color.use = irf_colors,      
+      signaling = signaling,      
+      layout = "chord", 
+      vertex.label.cex = 2.6
+    )
+    
+    # Define the filename with the signaling name and "_wt" suffix
+    file_name <- paste0("Results/CellChat/", signaling, "_irf.pdf")
+    
+    # Save the plot to a PDF file
+    pdf(file = file_name)
+    print(plot)  # Print the plot to output it to the PDF
+    dev.off()
+    
+    # Optional: Print message to console
+    cat("Saved plot for", signaling, "to", file_name, "\n")
+  }
+}
+
+```
+
+```{r}
+pw <- cellchat.irf@netP$pathways
+
+plot_and_save_signaling(cellchat.irf, pw)
+```
+
+
+```{r}
+#relative contributions
+CCL<- netAnalysis_contribution(cellchat.irf, signaling = "CCL", font.size = 12, font.size.title = 14)
+pairLR.CCL <- extractEnrichedLR(cellchat.irf, signaling = "CCL", geneLR.return = FALSE)
+pairLR.CCL
+pdf(file="Results/CellChat/CCL_contribution_irf.pdf")
+plot(CCL)
+dev.off()
+
+ICAM<- netAnalysis_contribution(cellchat.irf, signaling = "ICAM", font.size = 12, font.size.title = 14)
+pairLR.ICAM <- extractEnrichedLR(cellchat.irf, signaling = "ICAM", geneLR.return = FALSE)
+pairLR.ICAM
+pdf(file="Results/CellChat/ICAM_contribution_irf.pdf")
+plot(ICAM)
+dev.off()
+
+GALECTIN<- netAnalysis_contribution(cellchat.irf, signaling = "GALECTIN", font.size = 12, font.size.title = 14)
+pairLR.GALECTIN <- extractEnrichedLR(cellchat.irf, signaling = "GALECTIN", geneLR.return = FALSE)
+pairLR.GALECTIN
+pdf(file="Results/CellChat/GALECTIN_contribution_irf.pdf")
+plot(GALECTIN)
+dev.off()
+```
+
+

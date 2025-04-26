@@ -1,0 +1,291 @@
+---
+title: "Visualization"
+output: html_document
+date: "2023-01-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+library(patchwork)
+library(cowplot)
+library(data.table)
+
+dir <- "Results/visualization/steady"
+dir.create(dir)
+
+mac.steady <- readRDS("Results/2_Integration/mac.steady.RDS")
+DefaultAssay(mac.steady) <- "RNA"
+mac.steady<- NormalizeData(mac.steady, normalization.method = "LogNormalize") 
+steady.wt<- subset(x = mac.steady, subset = genotype=="WT")
+steady.Irf<- subset(x = mac.steady, subset = genotype=="Irf8ko")
+
+colors.steady<- c("#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD", "#8C564B", "#E377C2")
+```
+
+
+```{r}
+p <- DimPlot(mac.steady, reduction = "umap", order=F, split.by="genotype", raster=F, label = T, pt.size=0.8, cols=colors.steady)+
+  scale_x_continuous(name="UMAP 1")+
+  scale_y_continuous(name="UMAP 2")+
+  theme(strip.text.x = element_text(size = 18, face = "plain"))+ 
+  NoLegend()
+
+p
+ggsave(paste0(dir,"/Clusters.mac.steady.png"), height=8, width=12, dpi=600)
+```
+
+```{r}
+Idents(mac.steady) <- "genotype"
+VlnPlot(mac.steady, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), log=T, split.by="genotype")
+
+
+ggsave(paste0(dir,"/QC_genotype.png"), height=4, width=8, dpi=600)
+
+```
+
+
+#search for genes
+```{r}
+gene_names <- rownames(GetAssayData(object = mac, assay = "RNA", layer = "counts"))
+prefix <- "Ifn"
+
+matching_genes <- grep(paste0("^", prefix), gene_names, value = TRUE)
+
+print(matching_genes)
+```
+
+```{r}
+dir.feat <- "Results/visualization/steady/Feature"
+
+genes <- c(
+  "Cd9", "Pdgfb", "Cx3cr1",
+  "Ccl2","Tnf", "Ccl4",
+  "Gpnmb", "Abcg1", "Ly6c2", "Thbs1", 
+  "Ctsk", "P2rx7",
+  "Csf1r",  "Fos", "Maf", "Jun",
+  "Csf2rb", "Cd74", "Lyz1","Il1b",
+  "Il10", "Clec4d", "Cxcl1", 
+  "Gdf15", "Ednrb",
+  "Trim25", "Mmp19") 
+
+generate_feature_plots <- function(mac.steady, genes) {
+  for (gene in genes) {
+    p <- FeaturePlot(mac.steady, features = c(gene), split.by = "genotype", pt.size = 0.5, order = T)
+    ggsave(filename = paste0(dir.feat, "/", gene, ".png"), plot = p, height = 3, width = 6, dpi = 600)
+  }
+}
+
+generate_feature_plots(mac.steady, genes)
+```
+
+
+```{r}
+DotPlot(steady, split.by="genotype" features = genes.steady_experiment, scale = T, cols = c("RdYlBu")) +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  guides(size=guide_legend(override.aes=list(shape=21, colour="black", fill="white"))) + 
+  xlab('Gene') +  
+  ylab('Cluster')+ 
+  RotatedAxis() +
+  scale_y_discrete(limits=rev)+ 
+  scale_x_discrete(limits=rev) +
+  theme(axis.text.y=element_text(color=colors.steady, size=14, face="bold"),axis.title = element_text(size=14),
+  panel.background = element_blank(),
+  panel.border = element_rect(fill = NA),
+  text = element_text(size = 12),
+  panel.grid.major.x = element_line(color = "grey80"),
+  panel.grid.major.y = element_line(color = "grey80") )
+ggsave(paste0(dir,"/DP-steady.wt.png"), height=4, width=8, dpi=600)
+```
+
+
+```{r}
+library(dittoSeq)
+library(tidyverse)
+cols=c("#55A0FB", "dark red")
+mycolors=c("#a6cee3",
+"#1f78b4",
+"#b2df8a",
+"#33a02c",
+"#e31a1c",
+"#ff7f00",
+"#cab2d6",
+"#6a3d9a",
+"#ffff99",
+"#b15928",
+"#fb9a99",
+"#005F6A")
+
+colind=c("#0700C4","#0000FF", "#0052FF", "#007AFF", "#00A3FF", "#00CCFF", "#ff0000", "#d70000", "#c60000", "#b70000", "#9b0000" )
+
+dittoBarPlot(object = myeloid, var = "condition", group.by = "seurat_clusters", retain.factor.levels=T, color.panel = cols) +labs(title="Relative cluster abundance", x ="Cluster", y = "Fraction of cells")       
+ggsave(paste0(dir,"/ditto_condition.png"), height=5, width=10, dpi=600)
+
+dittoBarPlot(object = myeloid, var = "seurat_clusters", group.by = "condition", retain.factor.levels=T, color.panel = mycolors) +labs(title="Relative cluster abundance", x ="Cluster", y = "Fraction of cells") 
+ggsave(paste0(dir,"/dittoseq_cluster.png"), height=5, width=3, dpi=600)
+
+
+dittoBarPlot(object = myeloid, var = "orig.ident", group.by = "seurat_clusters", retain.factor.levels=T, color.panel = colind) +labs(title="Relative cluster abundance", x ="Cluster", y = "Fraction of cells")  
+ggsave(paste0(dir,"/ditto_condition_individual.png"), height=5, width=10, dpi=600)
+
+
+dittoBarPlot(object = myeloid, var = "orig.ident", group.by = "seurat_clusters", retain.factor.levels=T, color.panel = colind, scale="count") +labs(title="Relative cluster abundance", x ="Cluster", y = "Count")
+ggsave(paste0(dir,"/ditto_condition_individual_count.png"), height=5, width=10, dpi=600)
+
+cl_prop_sct_individual <- read_excel("Results/2sctransform/cl_prop_sct_individual.xlsx")
+prop <- as.data.frame(cl_prop_sct_individual)
+rownames(prop) <- prop[, 1]
+
+
+
+
+#dittoPlotVarsAcrossGroups(object = myeloid, vars=c("Ly6c2", "Ccr2", "Itgam"), group.by="condition", color.panel = cols)
+#ggsave(paste0(dir,"/dittoseq_meanZ.png"), height=5, width=3, dpi=600)
+```
+
+
+
+## R Markdown
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(readxl)
+library(tidyverse)
+library(RColorBrewer)
+library(patchwork)
+library(ggpubr)
+
+dir <- "Results/grouped_expressions"
+dir.create(dir)
+
+myeloid <- readRDS("Results/2sctransform/myeloid.sct.RDS")
+
+DefaultAssay(myeloid) <- "RNA"
+
+myeloid<- NormalizeData(myeloid, normalization.method = "LogNormalize")
+total.gene.list <- rownames(x=myeloid)
+
+
+#inflammasome
+inflammasome.list <- read_xlsx("gene_lists/inflammasome.xlsx")
+inflammasome.genes <- inflammasome.list$Symbol
+inflammasome <- intersect(total.gene.list, inflammasome.genes)
+list(inflammasome)
+
+# Get mean expression of genes of interest per cell
+agg.inflammasome <- colSums(x = myeloid@assays$RNA@data[inflammasome, ], na.rm = TRUE)
+
+# Add mean expression values in 'object@meta.data$inflammasome.score'
+if (all(names(x = agg.inflammasome) == rownames(x = myeloid@meta.data))) {
+  myeloid@meta.data$Inflammasome <- agg.inflammasome
+}
+
+
+# Plot mean expression using Seurat::FeaturePlot()
+Inflammasome <- FeaturePlot(myeloid, order=T, features= "Inflammasome", min.cutoff='q1', max.cutoff='q99', pt.size = 0.8, split.by = "condition", combine=T, label=F) +theme(legend.position = "right") +scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdYlBu")))
+Inflammasome [[1]] <- Inflammasome[[1]]+scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdYlBu")))
+Inflammasome
+ggsave(paste0(dir,"/inflammasome.featureplot.png"), height=5, width=10, dpi=600)
+
+#tissue
+tissue.list <- read_xlsx("gene_lists/Tissue_remodeling.xlsx")
+tissue.genes <- tissue.list$Symbol
+Tissue_remodeling <- intersect(total.gene.list, tissue.genes)
+list(Tissue_remodeling)
+
+# Get mean expression of genes of interest per cell
+agg.tissue <- colSums(x = myeloid@assays$RNA@data[Tissue_remodeling, ], na.rm = TRUE)
+
+# Add mean expression values in 'object@meta.data$inflammasome.score'
+if (all(names(x = agg.tissue) == rownames(x = myeloid@meta.data))) {
+  myeloid@meta.data$Tissue_remodeling <- agg.tissue
+}
+
+
+#phagocytosis
+phagocytosis.list <- read_xlsx("gene_lists/Phagocytosis.xlsx")
+phagocytosis.genes <- phagocytosis.list$Symbol
+Phagocytosis <- intersect(total.gene.list, phagocytosis.genes)
+list(Phagocytosis)
+
+# Get mean expression of genes of interest per cell
+agg.phagocytosis <- colSums(x = myeloid@assays$RNA@data[Phagocytosis, ], na.rm = TRUE)
+
+# Add mean expression values in 'object@meta.data$phagocytosis.score'
+if (all(names(x = agg.phagocytosis) == rownames(x = myeloid@meta.data))) {
+  myeloid@meta.data$Phagocytosis <- agg.phagocytosis
+}
+
+
+#ROS
+ROS.list <- read_xlsx("gene_lists/ROS.xlsx")
+ROS.genes <- ROS.list$Symbol
+ROS <- intersect(total.gene.list, ROS.genes)
+list(ROS)
+
+# Get mean expression of genes of interest per cell
+agg.ROS <- colSums(x = myeloid@assays$RNA@data[ROS, ], na.rm = TRUE)
+
+# Add mean expression values in 'object@meta.data$ROS.score'
+if (all(names(x = agg.ROS) == rownames(x = myeloid@meta.data))) {
+  myeloid@meta.data$ROS <- agg.ROS
+}
+
+#Antigen presentation
+Antigen.list <- read_xlsx("gene_lists/Antigen_presentation.xlsx")
+Antigen.genes <- Antigen.list$Symbol
+Antigen_presentation <- intersect(total.gene.list, Antigen.genes)
+list(Antigen_presentation)
+
+# Get mean expression of genes of interest per cell
+agg.Antigen_presentation <- colSums(x = myeloid@assays$RNA@data[Antigen_presentation, ], na.rm = TRUE)
+
+# Add mean expression values in 'object@meta.data$ROS.score'
+if (all(names(x = agg.Antigen_presentation) == rownames(x = myeloid@meta.data))) {
+  myeloid@meta.data$Antigen_presentation <- agg.Antigen_presentation
+}
+
+
+```
+
+```{r}
+#myeloid<- NormalizeData(myeloid, normalization.method = "LogNormalize")
+
+
+p1<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="Antigen_presentation", cols=c("cornflowerblue", "dark red"), pt.size = 0, log=T)+labs(title="Antigen processing/presentation", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+theme(legend.position="none")+geom_boxplot(width=.1, fill="white")
+p1<- p1+stat_compare_means(comparisons = list(c("0","1"), c("0","2")), label = "p.signif")
+p1
+ggsave(paste0(dir,"/Antigen_presentation_sign.png"), height=5, width=10, dpi=600)
+
+p1inf<- VlnPlot(inf, features="Antigen_presentation", cols=mycolors, pt.size = 0, log=T)+labs(title="Antigen processing/presentation", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+theme(legend.position="none")+geom_boxplot(width=.1, fill="white")
+p1inf<- p1inf+stat_compare_means(ref.group="0", label = "p.signif")
+p1inf
+ggsave(paste0(dir,"/Antigen_presentation_sign_inf.png"), height=5, width=10, dpi=600)
+
+p1ctrl<- VlnPlot(ctrl, features="Antigen_presentation", cols=mycolors, pt.size = 0, log=T)+labs(title="Antigen processing/presentation", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+theme(legend.position="none")+geom_boxplot(width=.1, fill="white")
+p1ctrl<- p1inf+stat_compare_means(ref.group="0", label = "p.signif")
+p1ctrl
+ggsave(paste0(dir,"/Antigen_presentation_sign_ctrl.png"), height=5, width=10, dpi=600)
+
+
+p2<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="ROS", cols=c("cornflowerblue", "dark red"), pt.size = 0,log=T) +labs(title="ROS", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+geom_boxplot(width=.1, fill="white") +theme(legend.position="none")
+ggsave(paste0(dir,"/ROS.png"), height=5, width=10, dpi=600)
+
+p3<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="Inflammasome", cols=c("cornflowerblue", "dark red"), pt.size = 0, log=T)+labs(title="Inflammasome", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+geom_boxplot(width=.1, fill="white") +theme(legend.position="none")
+ggsave(paste0(dir,"/Inflammasome.png"), height=5, width=10, dpi=600)
+
+p4<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="Phagocytosis", cols=c("cornflowerblue", "dark red"), pt.size = 0, log=T)+labs(title="Phagocytosis", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+geom_boxplot(width=.1, fill="white") +theme(legend.position="right")
+ggsave(paste0(dir,"/Phagocytosis.png"), height=5, width=10, dpi=600)
+
+p5<- VlnPlot(myeloid, split.by="condition",split.plot=T, features="Tissue_remodeling", cols=c("cornflowerblue", "dark red"), pt.size = 0, log=T)+labs(title="Tissue remodeling", x ="Cluster", y = "Aggregated count") +theme(text = element_text(size=18), axis.text=element_text(size=14), axis.text.x = element_text(angle = 0, hjust=0.5), plot.title = element_text(size=18, face="plain", vjust = 3))+geom_boxplot(width=.1, fill="white") +theme(legend.position="none")
+ggsave(paste0(dir,"/Tissue_remodeling.png"), height=5, width=10, dpi=600)
+
+p1+p2+p3+p5+p4 + plot_layout(ncol = 2)
+ggsave(paste0(dir,"/Vln-aggregated-split.png"), height=9, width=10, dpi=600)
+```
+

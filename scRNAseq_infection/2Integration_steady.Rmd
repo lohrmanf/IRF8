@@ -1,0 +1,164 @@
+---
+title: "2.2TXnoint"
+output: html_document
+date: '2022-06-09'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2)
+library(openxlsx)
+library(dplyr)
+library(patchwork)
+library(glmGamPoi)
+
+dir <- "Results/2_Integration"
+dir.create(dir)
+
+s1 =readRDS("Results/1ReadinData/s1.RDS")
+s3 =readRDS("Results/1ReadinData/s3.RDS")
+
+s7 =readRDS("Results/1ReadinData/s7.RDS")
+s8 =readRDS("Results/1ReadinData/s8.RDS")
+s9 =readRDS("Results/1ReadinData/s9.RDS")
+
+
+# Add percent mitochondrial genes per cell
+s1[["percent.mt"]] <- PercentageFeatureSet(s1, pattern = "^mt-")
+s3[["percent.mt"]] <- PercentageFeatureSet(s3, pattern = "^mt-")
+
+s7[["percent.mt"]] <- PercentageFeatureSet(s7, pattern = "^mt-")
+s8[["percent.mt"]] <- PercentageFeatureSet(s8, pattern = "^mt-")
+s9[["percent.mt"]] <- PercentageFeatureSet(s9, pattern = "^mt-")
+
+
+
+# Merge the Seurat objects directly
+mac.steady <- merge(s1, y = list(s3, s7, s8, s9), 
+             add.cell.ids = c("s1", "s3", "s7", "s8", "s9"))
+
+```
+
+# label conditions
+```{r setup, include=FALSE}
+mac.steady@meta.data$genotype[(mac.steady@meta.data$orig.ident)=="s1"] <- "WT"
+mac.steady@meta.data$genotype[(mac.steady@meta.data$orig.ident)=="s3"] <- "WT"
+
+mac.steady@meta.data$genotype[(mac.steady@meta.data$orig.ident)=="s7"] <- "Irf8ko"
+mac.steady@meta.data$genotype[(mac.steady@meta.data$orig.ident)=="s8"] <- "Irf8ko"
+mac.steady@meta.data$genotype[(mac.steady@meta.data$orig.ident)=="s9"] <- "Irf8ko"
+```
+
+
+```{r}
+# QC imaging
+VlnPlot(mac.steady, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+ggsave(paste0(dir,"/QC.png"), height=4, width=12, dpi=600)
+
+VlnPlot(mac.steady, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), log=T, split.by="condition")
+ggsave(paste0(dir,"/QC_condition.png"), height=4, width=12, dpi=600)
+```
+
+
+```{r}
+# QC filtering
+mac.steady <- subset(mac.steady, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000 & nCount_RNA > 500)
+
+mac.steady[["RNA"]] <- JoinLayers(mac.steady[["RNA"]])
+Layers(mac.steady[["RNA"]])
+
+genes_present <- rownames(GetAssayData(object = mac.steady, assay = "RNA", layer = "counts"))
+print("Ly6g" %in% genes_present)
+print("Cd3e" %in% genes_present)
+
+non.gm.genes <- rownames(mac.steady[["RNA"]]$counts[grep("^(Gm\\d|Rpl\\d|Rps\\d)", rownames(mac.steady[["RNA"]]$counts), invert = T),])
+mac.steady <- subset(mac.steady, features = non.gm.genes)
+
+```
+
+
+```{r}
+set.seed(123)
+mac.steady <- NormalizeData(mac.steady)
+mac.steady <- FindVariableFeatures(mac.steady, selection.method = "vst", nfeatures = 3000)
+all.genes <- rownames(mac.steady)
+mac.steady <- ScaleData(mac.steady, features = all.genes, vars.to.regress = "percent.mt")
+
+mac.steady <- RunPCA(mac.steady, features = VariableFeatures(object = mac.steady))
+
+mac.steady <- RunUMAP(mac.steady, dims = 1:20)
+
+umapco<- as.data.frame(mac.steady[["umap"]]@cell.embeddings)
+
+good.cells <- rownames(subset(umapco, umapco$umap_1 < 9))
+
+mac.steady <- subset(mac.steady, cells=good.cells)
+
+mac.steady$genotype <- factor(x = mac.steady$genotype, levels = c("WT", "Irf8ko"))
+
+# Find cluster
+mac.steady <- FindNeighbors(mac.steady, dims=1:30)
+mac.steady <- FindClusters(mac.steady,  resolution= 0.6)
+
+DimPlot(mac.steady, reduction = "umap", split.by = "genotype", label = TRUE, repel = F)
+```
+
+
+```{r}
+# Save data
+mac.steady <- NormalizeData(mac.steady, normalization.method = "LogNormalize")
+saveRDS(mac.steady, paste0(dir,"/mac.steady.RDS"))
+
+Cluster.Distribution <- as.data.frame.matrix(prop.table(table(Idents(mac.steady), mac.steady$orig.ident), margin=2))
+Cluster.Distribution <- round(Cluster.Distribution, 4)
+write.xlsx(Cluster.Distribution, paste0(dir,"/mac.steady.xlsx"), rowNames=TRUE)
+
+
+Cluster.numbers <- as.data.frame.matrix(table(Idents(mac.steady), mac.steady$genotype), margin=2)
+write.xlsx(Cluster.numbers, paste0(dir,"/Cluster.numbers_mac.steady.xlsx"), rowNames=TRUE)
+
+```
+
+
+
+```{r}
+# sctransform and integration
+set.seed(123)
+s<- subset(x=myeloid, subset= condition=="s")
+inf<- subset(x=myeloid, subset= condition=="inf")
+
+m.list <- list(s, inf)
+
+m.list <- lapply(X=m.list, FUN= SCTransform)
+features <- SelectIntegrationFeatures(object.list = m.list, nfeatures=3000)
+m.list <- PrepSCTIntegration(object.list = m.list, anchor.features = features)
+
+m.anchors <- FindIntegrationAnchors(object.list = m.list, normalization.method = "SCT", reduction="cca", anchor.features = features)
+
+myeloid <- IntegrateData(anchorset = m.anchors, normalization.method = "SCT")
+
+# PCA And UMAP
+myeloid <- RunPCA(myeloid, verbose=FALSE)
+ElbowPlot(myeloid)
+myeloid <- RunUMAP(myeloid, reduction = "pca", dims=1:20)
+
+# Plot
+DimPlot(myeloid, reduction = "umap", group.by="condition")
+
+# Find cluster
+myeloid <- FindNeighbors(myeloid, dims=1:20, graph.name="RNA_snn")
+
+myeloid <- FindClusters(myeloid, resolution= 0.4, graph.name="RNA_snn")
+
+saveRDS(myeloid, paste0(dir,"/myeloid.RDS"))
+
+DimPlot(myeloid, split.by="condition", reduction = "umap", label=TRUE)
+
+
+
+
+```
+
