@@ -1,0 +1,374 @@
+---
+title: "Gene set enrichment"
+output: html_document
+date: '2026-03-28'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(GO.db)
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(presto)
+library(pheatmap)
+library(RColorBrewer)
+library(readxl)
+library(reshape2)
+
+dir.p <- "Results/gene set enrichment/plots"
+dir.g <- "Results/gene set enrichment/GSEA"
+
+dir.create(dir.p, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir.g, recursive = TRUE, showWarnings = FALSE)
+
+colors <- c(
+  "0" = "#a6cee3", "1" = "#1f78b4", "2" = "#b2df8a", "3" = "#33a02c",
+  "4" = "#e31a1c", "5" = "#ff7f00", "6" = "#cab2d6", "7" = "#6a3d9a",
+  "8" = "#ffff99", "9" = "#b15928", "10" = "#fb9a99", "11" = "#005F6A"
+)
+
+# clusters to analyze
+wt_clusters  <- c(0, 1, 2, 4, 7, 8, 9)
+irf_clusters <- c(1, 3, 4, 5, 6, 7, 8, 9)
+
+# load precomputed infected marker tables
+WT_infected_markers <- read_excel("Results/3FindMarkers/WT_infected_markers.xlsx")
+Irf8_infected_markers <- read_excel("Results/3FindMarkers/Irf8_infected_markers.xlsx")
+colnames(WT_infected_markers)
+```
+
+
+
+#prepare marker table
+```{r}
+prepare_marker_table <- function(marker_df, clusters_use) {
+  marker_df <- as.data.frame(marker_df)
+
+  required_cols <- c("p_val", "avg_log2FC", "pct.1", "pct.2", "p_val_adj", "cluster", "gene")
+  missing_cols <- setdiff(required_cols, colnames(marker_df))
+
+  if (length(missing_cols) > 0) {
+    stop(
+      "Marker table is missing required columns: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  }
+
+  marker_df <- marker_df %>%
+    dplyr::mutate(cluster = as.numeric(cluster)) %>%
+    dplyr::filter(cluster %in% clusters_use) %>%
+    dplyr::select(gene, cluster, avg_log2FC, dplyr::everything())
+
+  return(marker_df)
+}
+
+
+WT_infected_markers <- prepare_marker_table(WT_infected_markers, wt_clusters)
+Irf8_infected_markers <- prepare_marker_table(Irf8_infected_markers, irf_clusters)
+```
+
+#perform_gsea for each cluster
+```{r}
+perform_gsea_from_table <- function(marker_df, obj_name, clusters_use, orgdb, dir_gsea) {
+
+  perform_gsea_for_cluster <- function(cluster_data, cluster_id) {
+    set.seed(123)
+
+    eg <- bitr(
+      cluster_data$gene,
+      fromType = "SYMBOL",
+      toType = "ENTREZID",
+      OrgDb = orgdb
+    )
+
+    eg <- subset(eg, !duplicated(eg$SYMBOL))
+    rownames(eg) <- eg$SYMBOL
+    eg$SYMBOL <- NULL
+
+    diffexpgenes <- merge(cluster_data, eg, by.x = "gene", by.y = "row.names")
+    rownames(diffexpgenes) <- diffexpgenes$gene
+
+    fc <- diffexpgenes$avg_log2FC
+    names(fc) <- diffexpgenes$ENTREZID
+    fc <- sort(fc, decreasing = TRUE)
+
+    gse <- gseGO(
+      geneList = fc,
+      ont = "BP",
+      minGSSize = 15,
+      maxGSSize = 800,
+      OrgDb = orgdb,
+      seed = 1
+    )
+
+    if (is.null(gse) || nrow(gse@result) == 0) {
+      message("No significant GO terms for cluster ", cluster_id)
+      return(NULL)
+    }
+
+    sorted_results <- gse@result[order(gse@result$enrichmentScore, decreasing = TRUE), ]
+
+    csv_output <- file.path(dir_gsea, paste0("gse_", obj_name, "_cl", cluster_id, ".csv"))
+    rds_output <- file.path(dir_gsea, paste0("gse_", obj_name, "_cl", cluster_id, ".rds"))
+
+    write.csv(sorted_results, csv_output, row.names = FALSE)
+    saveRDS(gse, rds_output)
+
+    message("Saved GSEA results for ", obj_name, " cluster ", cluster_id)
+  }
+
+  for (cl in clusters_use) {
+    cluster_data <- marker_df %>% dplyr::filter(cluster == cl)
+
+    if (nrow(cluster_data) == 0) {
+      message("No marker data available for cluster ", cl)
+      next
+    }
+
+    perform_gsea_for_cluster(cluster_data, cl)
+  }
+}
+
+perform_gsea_from_table(WT_infected_markers, "inf.wt", wt_clusters, org.Mm.eg.db, dir.g)
+perform_gsea_from_table(Irf8_infected_markers, "inf.irf", irf_clusters, org.Mm.eg.db, dir.g)
+
+```
+
+#combine all into one file
+```{r}
+combined_wt <- {
+  results <- list()
+
+  for (cl in wt_clusters) {
+    gsea_file <- file.path(dir.g, paste0("gse_inf.wt_cl", cl, ".csv"))
+
+    if (!file.exists(gsea_file)) {
+      message("GSEA file not found: ", gsea_file)
+      next
+    }
+
+    res <- read.csv(gsea_file)
+    res$Cluster <- paste0("Cluster_", cl)
+    results[[as.character(cl)]] <- res
+  }
+
+  bind_rows(results)
+}
+
+head(combined_wt)
+
+combined_irf <- {
+  results <- list()
+
+  for (cl in irf_clusters) {
+    gsea_file <- file.path(dir.g, paste0("gse_inf.irf_cl", cl, ".csv"))
+
+    if (!file.exists(gsea_file)) {
+      message("GSEA file not found: ", gsea_file)
+      next
+    }
+
+    res <- read.csv(gsea_file)
+    res$Cluster <- paste0("Cluster_", cl)
+    results[[as.character(cl)]] <- res
+  }
+
+  bind_rows(results)
+}
+
+head(combined_irf)
+```
+
+```{r}
+write.csv(combined_wt, "combined_wt_gsea.csv", row.names = FALSE)
+write.csv(combined_irf, "combined_irf_gsea.csv", row.names = FALSE)
+```
+
+# Filter for manually selected GO terms
+```{r}
+# -----------------------------
+# HANDPICK GO TERMS FOR HEATMAP
+# -----------------------------
+go_terms_wt <- list(
+  "Cluster_0" = c(
+    "GO:0006809",  # nitric oxide biosynthetic process
+    "GO:0001666",  # response to hypoxia
+    "GO:0030155"   # regulation of cell adhesion
+  ),
+  "Cluster_1" = c(
+    "GO:0051251",  # positive regulation of lymphocyte activation
+    "GO:0009617",  # response to bacterium
+    "GO:0043410"   # positive regulation of MAPK cascade
+  ),
+  "Cluster_2" = c(
+    "GO:0019882",  # antigen processing and presentation
+    "GO:0050863",  # regulation of T cell activation
+    "GO:0140888",  # interferon-mediated signaling pathway
+    "GO:0045087"   # innate immune response
+  ),
+  "Cluster_4" = c(
+    "GO:0032640",  # tumor necrosis factor production
+    "GO:0002237",  # response to molecule of bacterial origin
+    "GO:0001817",  # regulation of cytokine production
+    "GO:0051251"   # positive regulation of lymphocyte activation
+  ),
+  "Cluster_7" = c(
+    "GO:0050870",  # positive regulation of T cell activation
+    "GO:1903039",  # positive regulation of leukocyte cell-cell adhesion
+    "GO:0002250",  # adaptive immune response
+    "GO:0006935"   # chemotaxis
+  ),
+  "Cluster_8" = c(
+  "GO:0009063",  # amino acid catabolic process
+  "GO:0016054",  # organic acid catabolic process
+  "GO:0006520"   # amino acid metabolic process
+  ),
+  "Cluster_9" = c(
+    "GO:0022402",  # cell cycle process
+    "GO:0000280",  # nuclear division
+    "GO:0007059",  # chromosome segregation
+    "GO:0051301"   # cell division
+  )
+)
+
+go_terms_irf <- list(
+  "Cluster_1" = c(
+    "GO:0042060",  # wound healing
+    "GO:0001525",  # angiogenesis
+    "GO:0048514",  # blood vessel morphogenesis
+    "GO:0006959"   # humoral immune response
+  ),
+  "Cluster_3" = c(
+    "GO:0071674",  # mononuclear cell migration
+    "GO:0097529",  # myeloid leukocyte migration
+    "GO:0050900",  # leukocyte migration
+    "GO:0006954"   # inflammatory response
+  ),
+  "Cluster_4" = c(
+    "GO:0033993",  # response to lipid
+    "GO:0045087",  # innate immune response
+    "GO:0009617",  # response to bacterium
+    "GO:0001817"   # regulation of cytokine production
+  ),
+  "Cluster_5" = c(
+    "GO:0050900",  # leukocyte migration
+    "GO:0097529",  # myeloid leukocyte migration
+    "GO:0006935",  # chemotaxis
+    "GO:0007159"   # leukocyte cell-cell adhesion
+  ),
+  "Cluster_6" = c(
+    "GO:0019882",  # antigen processing and presentation
+    "GO:0007159",  # leukocyte cell-cell adhesion
+    "GO:0050867",  # positive regulation of cell activation
+    "GO:0002250"   # adaptive immune response
+  ),
+  "Cluster_7" = c(
+    "GO:0002250",  # adaptive immune response
+    "GO:1903039",  # positive regulation of leukocyte cell-cell adhesion
+    "GO:0050863",  # regulation of T cell activation
+    "GO:0070663"   # regulation of leukocyte proliferation
+  ),
+  "Cluster_8" = c(
+  "GO:0006959",   # humoral immune response
+  "GO:0006119"   # oxidative phosphorylation
+),
+  "Cluster_9" = c(
+    "GO:0022402",  # cell cycle process
+    "GO:0000280",  # nuclear division
+    "GO:0007059",  # chromosome segregation
+    "GO:0051301"   # cell division
+  )
+)
+
+go_terms_wt  <- lapply(go_terms_wt, unique)
+go_terms_irf <- lapply(go_terms_irf, unique)
+```
+
+
+#create heatmap
+```{r}
+capitalize_first_letter <- function(term) {
+  sapply(term, function(x) paste0(toupper(substring(x, 1, 1)), substring(x, 2)))
+}
+
+make_go_heatmap_matrix <- function(combined_df, go_term_list) {
+  selected_go_terms <- unique(unlist(go_term_list, use.names = FALSE))
+  
+  filtered <- combined_df[combined_df$ID %in% selected_go_terms, ]
+  
+  heatmap_data <- reshape2::dcast(
+    filtered,
+    ID + Description ~ Cluster,
+    value.var = "NES"
+  )
+  
+  # keep manual order exactly as specified
+  heatmap_data <- heatmap_data[match(selected_go_terms, heatmap_data$ID), ]
+  heatmap_data <- heatmap_data[!is.na(heatmap_data$ID), , drop = FALSE]
+  
+  heatmap_data$Description <- capitalize_first_letter(heatmap_data$Description)
+  rownames(heatmap_data) <- heatmap_data$Description
+  
+  # keep only the cluster columns present in the manual list, in chosen order
+  cluster_order <- names(go_term_list)
+  cluster_cols <- intersect(cluster_order, colnames(heatmap_data))
+  
+  heatmap_mat <- heatmap_data[, c("ID", "Description", cluster_cols), drop = FALSE]
+  colnames(heatmap_mat) <- gsub("Cluster_", "Cluster ", colnames(heatmap_mat))
+  
+  heatmap_mat <- heatmap_mat[, -c(1:2), drop = FALSE]
+  heatmap_mat <- as.matrix(heatmap_mat)
+  
+  return(heatmap_mat)
+}
+
+plot_go_heatmap <- function(heatmap_mat, out_file, width = 6, height = 4) {
+  color_palette <- rev(colorRampPalette(brewer.pal(11, "RdYlBu"))(100))
+  
+  png(filename = out_file, width = width, height = height, units = "in", res = 600)
+  
+  pheatmap(
+    heatmap_mat,
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    color = color_palette,
+    main = "",
+    fontsize = 10,
+    labels_col = colnames(heatmap_mat),
+    border_color = NA,
+    na_col = "grey95"
+  )
+  
+  dev.off()
+}
+```
+
+
+#create heatmap
+```{r}
+heatmap_wt <- make_go_heatmap_matrix(combined_wt, go_terms_wt)
+
+plot_go_heatmap(
+  heatmap_mat = heatmap_wt,
+  out_file = file.path(dir.p, "GO_Term_Heatmap_wt.png"),
+  width = 6,
+  height = 4
+)
+
+
+heatmap_irf <- make_go_heatmap_matrix(combined_irf, go_terms_irf)
+
+plot_go_heatmap(
+  heatmap_mat = heatmap_irf,
+  out_file = file.path(dir.p, "GO_Term_Heatmap_irf.png"),
+  width = 6,
+  height = 4
+)
+```
+
+

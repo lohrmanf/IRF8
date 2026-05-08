@@ -1,0 +1,749 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-08-03"
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+
+```{r setup, include=FALSE}
+library(hdf5r)
+library(arrow)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(spacexr)
+library(parallel)
+library(Matrix)
+library(tibble)
+library(biomaRt)
+
+dir.s <- "Setup"
+dir.r <- "Results"
+
+colors.mac <- c("#8AB6F9",  "#ffc13b","#04d4f0", "#5c3c92", "#077b8a", "#d72631",  "#80c904")
+
+```
+
+# read objects
+```{r}
+WT_annotated <- readRDS(paste0(dir.s, "/WT.spatial_annotated.rds"))
+
+integrated <- readRDS(paste0(dir.s, "/integrated.RDS"))
+
+mac_sc <- readRDS(paste0(dir.s, "/mac_filter_merge.RDS"))
+mac_sc@meta.data$Experiment2
+mac_sc_wt <- subset(mac_sc, subset = Experiment2 == "WT")
+table(mac_sc_wt@meta.data$new_clusters)
+
+mac_sc_wt$broad_clusters <- ifelse(grepl("^4", as.character(mac_sc_wt$new_clusters)), 
+                                   "4", 
+                                   as.character(mac_sc_wt$new_clusters))
+
+# Make it an ordered factor (optional)
+mac_sc_wt$broad_clusters <- factor(mac_sc_wt$broad_clusters, levels = c("1","2","3","4"))
+
+# Quick check
+table(mac_sc_wt$broad_clusters, useNA = "ifany")
+```
+
+#read files 8µm
+```{r}
+WT <- Load10X_Spatial(paste0(dir.s, "/square_008um"))
+
+WT <- NormalizeData(WT)
+```
+
+#tech visualization
+```{r}
+vln.plot.w <- VlnPlot(WT, features = "nCount_Spatial", pt.size = 0) + theme(axis.text = element_text(size = 4)) + NoLegend()
+
+count.plot.w <- SpatialFeaturePlot(WT, features = "nCount_Spatial") + theme(legend.position = "right")
+
+vln.plot.w | count.plot.w
+ggsave(paste0(dir.s, "/counts.wt.png"), width=6, height=3, dpi=600)
+
+VlnPlot(WT, features = "nFeature_Spatial", log=T)
+total_features <-nrow(WT@assays$Spatial@layers$counts)
+
+print(total_features)
+total_spots <- ncol(WT@assays$Spatial@layers$counts)
+print(total_spots)
+
+```
+
+#cluster the whole dataset WT
+```{r}
+set.seed(123)
+
+min_count <- 50  
+
+WT <- subset(WT, subset = nCount_Spatial > min_count)
+
+WT <- FindVariableFeatures(WT)
+
+WT <- ScaleData(WT)
+
+WT <- RunPCA(WT, assay = "Spatial", reduction.name = "pca")
+ElbowPlot(WT)
+
+WT <- FindNeighbors(WT, reduction = "pca", dims = 1:14)
+
+WT <- FindClusters(WT, cluster.name = "seurat_cluster", resolution = 1.7)
+
+WT <- RunUMAP(WT, reduction = "pca", reduction.name = "umap", return.model = T, dims = 1:14)
+
+DimPlot(WT, reduction = "umap")
+```
+
+
+#### Decomposition of celltypes
+#### Merging public and own scRNAseq datasets 
+```{r}
+# load in the reference scRNA-seq dataset
+ref <- mac_sc_wt
+```
+
+
+#first step: Change gene name format in skin_sc
+```{r}
+skin_sc <- readRDS(paste0(dir.s, "/Anderson.rds"))
+
+table(skin_sc@meta.data$merged_cell_type_name)
+
+table(skin_sc@meta.data$disease_ontology_term_id)
+
+#KRT   FB CHFB  VEC  LEC  PVC  SCH   MC  LYM  NEU  APC 
+#2642 3509  994  278  267  301  263   55  521  300  686
+
+Idents(skin_sc) <- "disease_ontology_term_id"
+
+skin_sc_he <- subset(skin_sc, idents = setdiff(levels(Idents(skin_sc)), "MONDO:0006541"))
+
+Idents(skin_sc_he) <- "merged_cell_type_name"
+
+skin_sc_he <- subset(skin_sc_he, idents = setdiff(levels(Idents(skin_sc_he)), "MC"))
+
+levels(Idents(skin_sc_he))  
+
+gene_symbols_pub <- rownames(GetAssayData(object = skin_sc_he, assay = "RNA", layer = "counts"))
+head(gene_symbols_pub) 
+
+gene_symbols_priv <- rownames(GetAssayData(object = ref, assay = "RNA", layer = "counts"))
+head(gene_symbols_priv) 
+
+# Step 1: Fetch the Mapping of Ensembl IDs to Gene Symbols
+ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+original_genes <- rownames(GetAssayData(skin_sc_he, assay = "RNA", layer = "counts"))
+
+mapping <- getBM(
+  attributes = c("ensembl_gene_id", "external_gene_name"),
+  filters = "ensembl_gene_id",
+  values = original_genes,
+  mart = ensembl
+)
+
+# Step 2: Map Ensembl IDs to Gene Symbols
+gene_symbols <- mapping$external_gene_name[match(original_genes, mapping$ensembl_gene_id)]
+
+# Handle unmapped genes by retaining original Ensembl IDs
+gene_symbols[is.na(gene_symbols)] <- original_genes[is.na(gene_symbols)]
+
+# Ensure all gene symbols are unique
+gene_symbols <- make.unique(gene_symbols)
+
+# Step 3: Replace Rownames in the Counts Matrix
+counts_pub <- GetAssayData(object = skin_sc_he, assay = "RNA", layer = "counts")
+rownames(counts_pub) <- gene_symbols
+
+head(counts_pub)
+
+sum(rownames(counts_pub) == "")  # Should return 0
+
+rownames(counts_pub)[rownames(counts_pub) == ""] <- "Unnamed_Gene"
+
+# Check for invalid rownames (e.g., empty or NA)
+if (any(is.na(rownames(counts_pub))) || any(rownames(counts_pub) == "")) {
+  stop("Counts matrix contains invalid feature names. Please check rownames.")
+}
+
+# Step 4: Replace the RNA Assay in the Seurat Object
+skin_sc_he[["RNA"]] <- CreateAssayObject(counts = counts_pub)
+
+# Step 5: Verify the Changes
+head(rownames(GetAssayData(skin_sc_he, assay = "RNA", layer = "counts")))  # Check new gene names
+
+dim(GetAssayData(skin_sc_he, assay = "RNA", layer = "counts"))  # Confirm dimensions remain unchanged
+
+```
+
+
+```{r}
+# Normalize and find variable features for skin_sc_he
+skin_sc_he <- NormalizeData(skin_sc_he)
+skin_sc_he <- FindVariableFeatures(skin_sc_he, selection.method = "vst", nfeatures = 3000)
+
+# Normalize and find variable features for ref
+DefaultAssay(ref) <- "RNA"
+ref <- NormalizeData(ref)
+ref <- FindVariableFeatures(ref, selection.method = "vst", nfeatures = 3000)
+```
+
+#perform integration
+```{r}
+# Find integration anchors
+anchors <- FindIntegrationAnchors(object.list = list(skin_sc_he, ref), dims = 1:30)
+# Integrate the data
+integrated <- IntegrateData(anchorset = anchors, dims = 1:30)
+
+```
+
+#annotate integrated
+```{r}
+integrated$ref_celltype <- NA  # Initialize with NA
+
+# Transfer annotations from skin_sc_he to the integrated dataset
+# This assumes that the cell names in skin_sc_he and integrated match (or can be subsetted/matched)
+common_cells <- intersect(Cells(skin_sc_he), Cells(integrated))
+integrated$ref_celltype[common_cells] <- skin_sc_he$merged_cell_type_name[common_cells]
+
+# Assign "APC" to all cells originating from ref
+# This assumes the cells from ref have unique identifiers or can be identified in integrated
+ref_cells <- intersect(Cells(ref), Cells(integrated))
+integrated$ref_celltype[ref_cells] <- "MAC"
+
+table(integrated$ref_celltype)
+
+# Create a named vector for mapping numeric labels to original names
+label_mapping <- c(
+  "1" = "KRT",
+  "2" = "FB",
+  "3" = "CHFB",
+  "4" = "VEC",
+  "5" = "LEC",
+  "6" = "PVC",
+  "7" = "SCH",
+  "9" = "LYM",
+  "10" = "NEU",
+  "11" = "APC-MAC",
+  "MAC" = "APC-MAC"
+)
+
+mapped_values <- label_mapping[integrated$ref_celltype]
+
+table(mapped_values)
+
+names(mapped_values) <- Cells(integrated)
+
+# Add or update the ref_celltype metadata
+integrated <- AddMetaData(integrated, metadata = mapped_values, col.name = "ref_celltype")
+
+# Check the updated metadata
+table(integrated@meta.data$ref_celltype)
+
+Idents(integrated) <- "ref_celltype"
+
+```
+
+#visualize integrated
+```{r}
+
+names(integrated@meta.data)
+table(integrated$disease)
+
+
+set.seed(1)
+
+# Scale the data and run PCA
+DefaultAssay(integrated) <- "integrated"
+integrated <- ScaleData(integrated, verbose = FALSE)
+integrated <- RunPCA(integrated, npcs = 30, verbose = FALSE)
+
+# Visualize PCA results
+ElbowPlot(integrated, ndims = 30)
+
+
+# Find neighbors and clusters
+integrated <- FindNeighbors(integrated, dims = 1:30)
+integrated <- FindClusters(integrated, resolution = 0.5)
+
+# Run UMAP
+integrated <- RunUMAP(integrated, dims = 1:30, seed.use = 1)
+
+# Visualize UMAP
+DimPlot(integrated, reduction = "umap", group.by = "ref_celltype")
+
+# Check cluster composition
+table(Idents(integrated))
+
+
+table(integrated$Experiment, useNA = "ifany")
+table(integrated$disease, useNA = "ifany")
+
+integrated$Experiment[is.na(integrated$Experiment) & integrated$disease == "normal"] <- "whole_skin"
+
+# Check if the update worked
+table(integrated$Experiment, useNA = "ifany")
+
+
+# If you want to compare between datasets
+DimPlot(integrated, reduction = "umap", split.by = "Experiment", group.by = "ref_celltype")
+
+saveRDS(integrated, paste0(dir.s, "/integrated.RDS"))
+
+integrated <- readRDS(paste0(dir.s, "/integrated.RDS"))
+```
+
+#create ref dataset with integrated for RCTD:
+```{r}
+Idents(integrated) <- "ref_celltype"
+levels(Idents(integrated))  
+
+counts <- integrated[["RNA"]]$counts
+
+cluster <- droplevels(Idents(integrated))
+
+genes <- rownames(counts)
+
+counts <- counts[!is.na(rownames(counts)), ]
+
+anyDuplicated(rownames(counts))  # Returns the number of duplicates
+
+nUMI <- colSums(counts)
+
+# Create the RCTD reference object
+reference <- Reference(counts, cluster, nUMI)
+
+common_genes <- intersect(rownames(counts), rownames(reference@counts))
+counts <- counts[common_genes, , drop = FALSE]
+reference@counts <- reference@counts[common_genes, , drop = FALSE]
+```
+
+#perform RCTD with WT
+```{r}
+# Query preparation from the spatial dataset (WT)
+counts_hd <- WT[["Spatial"]]$counts  # Spatial RNA counts
+WT_cells_hd <- colnames(WT[["Spatial"]])  # Spatial cells
+coords <- GetTissueCoordinates(WT)[WT_cells_hd, 1:2]  # Tissue coordinates for spatial data
+
+# Create the RCTD query object
+query <- SpatialRNA(coords, counts_hd, colSums(counts_hd))
+
+# Run the RCTD algorithm
+RCTD.wt <- create.RCTD(query, reference, max_cores = 7)
+RCTD.wt@config$CELL_MIN <- 0
+RCTD.wt <- run.RCTD(RCTD.wt, doublet_mode = "doublet")
+```
+
+# Save the RCTD results
+```{r}
+#saveRDS(RCTD.wt, paste0(dir.s, "/RCTD_WT_combined_ref.rds"))
+RCTD.wt <- readRDS(paste0(dir.s, "/RCTD_WT_combined_ref.rds"))
+```
+
+#explore weights and apply filter
+```{r}
+# RCTD.wt <- readRDS(paste0(dir.s, "/RCTD_WT_combined_ref.rds"))
+
+table(RCTD.wt@results$results_df$first_type)
+
+head(RCTD.wt@results$weights)
+
+results_df <- RCTD.wt@results$results_df
+weights <- RCTD.wt@results$weights
+
+# Extract weights for the primary cell type (first_type)
+primary_weights <- sapply(1:nrow(results_df), function(i) {
+    spot <- rownames(results_df)[i]
+    cell_type <- results_df$first_type[i]
+    weights[spot, cell_type]
+})
+
+# Add primary_weights as a separate DataFrame for exploration
+primary_weights_df <- data.frame(
+    spot = rownames(results_df),
+    first_type = results_df$first_type,
+    primary_weight = primary_weights
+)
+
+head(primary_weights_df)
+nrow(primary_weights_df)
+
+threshold <- 0.3  # Adjust as needed
+filtered_primary_weights_df <- primary_weights_df[primary_weights_df$primary_weight >= threshold, ]
+
+nrow(filtered_primary_weights_df)
+
+# Filter results_df
+filtered_results_df <- results_df[rownames(results_df) %in% filtered_primary_weights_df$spot, ]
+
+# Filter weights
+filtered_weights <- weights[rownames(weights) %in% filtered_primary_weights_df$spot, ]
+
+table(filtered_results_df$first_type)
+
+first_type_filtered <- filtered_results_df$first_type
+names(first_type_filtered) <- rownames(filtered_results_df)
+
+head(first_type_filtered)
+
+# Add RCTD results back to the Seurat object
+# Add original RCTD results
+WT <- AddMetaData(WT, metadata = RCTD.wt@results$results_df)
+
+# Add first_type_filtered as a new column
+WT <- AddMetaData(WT, metadata = first_type_filtered, col.name = "first_type_filtered")
+
+table(WT@meta.data$first_type_filtered)
+table(WT@meta.data$first_type)
+
+```
+
+#subset data to include only spots for APC
+```{r}
+#subset for APC
+WT$highlight_APC <- ifelse(WT$first_type == "APC-MAC", "APC-MAC", "Other")
+
+WT$highlight_APC <- factor(WT$highlight_APC, levels = c("Other", "APC-MAC"))
+
+subset_APC_wt <- subset(WT, subset = highlight_APC == "APC-MAC")
+
+#subset for APC filtered
+WT$highlight_APC_filtered <- ifelse(WT$first_type_filtered == "APC-MAC", "APC-MAC", "Other")
+
+WT$highlight_APC_filtered <- factor(WT$highlight_APC_filtered, levels = c("Other", "APC-MAC"))
+
+subset_APC_wt_filtered <- subset(WT, subset = highlight_APC_filtered == "APC-MAC")
+```
+
+# Perform differential expression analysis WT
+```{r}
+deg_results <- FindMarkers(WT, ident.1 = "APC-MAC", ident.2 = "Other", 
+                           group.by = "highlight_APC", 
+                           test.use = "wilcox", # Wilcoxon rank-sum test
+                           logfc.threshold = 0.25, 
+                           min.pct = 0.1) 
+
+sorted_deg_results <- deg_results %>%
+    as.data.frame() %>%
+    rownames_to_column("gene") %>%
+    arrange(desc(avg_log2FC))
+
+# Export to CSV
+write.csv(sorted_deg_results, file = paste0(dir.s,  "/APC_deg_wt.csv"), row.names = FALSE)
+
+
+deg_results_filtered <- FindMarkers(WT, ident.1 = "APC-MAC", ident.2 = "Other", 
+                           group.by = "highlight_APC_filtered", 
+                           test.use = "wilcox", # Wilcoxon rank-sum test
+                           logfc.threshold = 0.25, 
+                           min.pct = 0.1) 
+
+sorted_deg_results_filtered <- deg_results_filtered %>%
+    as.data.frame() %>%
+    rownames_to_column("gene") %>%
+    arrange(desc(avg_log2FC))
+
+# Export to CSV
+write.csv(sorted_deg_results_filtered, file = paste0(dir.s,  "/APC_deg_wt_filtered.csv"), row.names = FALSE)
+
+head(sorted_deg_results_filtered, n=20)
+```
+
+# Explore spot assignment WT
+```{r}
+table(WT@meta.data$first_type, useNA = "ifany")
+
+SpatialPlot(WT, group.by = "first_type") +
+    theme_minimal()
+
+
+# SpatialPlot with manual color assignment
+SpatialPlot(WT, group.by = "highlight_APC") +
+    scale_fill_manual(values = c("Other" = "grey", "APC" = "red")) +
+    theme_minimal()
+
+
+VlnPlot(WT, features = "Csf1r", group.by = "highlight_APC", 
+        cols = c("grey", "red")) +
+    theme_minimal() +
+    ggtitle("Expression of Csf1r in APC and Other Categories") +
+    ylab("Expression Level") +
+    xlab("Category")
+
+gene_of_interest <- "Fcer1g"
+
+# Extract the expression data for the gene
+gene_expression <- FetchData(WT, vars = gene_of_interest)
+
+# Add the corresponding categories to the data
+gene_expression$highlight_APC <- WT$highlight_APC
+
+# Calculate the percentage of zero values for each category
+zero_percentage <- gene_expression %>%
+    group_by(highlight_APC) %>%
+    summarize(percentage_zero = mean(get(gene_of_interest) == 0) * 100)
+
+# View the result
+print(zero_percentage)
+```
+
+
+
+####Second step: Decomposition with own scRNA-seq data -> only APCs
+#run decomposition with APC subset WT
+```{r}
+#check input data
+table(ref@meta.data$broad_clusters)
+Idents(ref) <- "broad_clusters"
+levels(Idents(ref))
+
+dim(subset_APC_wt_filtered)
+
+#create ref parameters
+counts <- ref[["RNA"]]$counts
+cluster <- as.factor(ref$broad_clusters)
+nUMI <- ref$nCount_RNA
+cluster <- droplevels(cluster)
+
+# create the RCTD reference objects
+reference <- Reference(counts, cluster, nUMI)
+
+#on APC_filtered
+counts_hd <- subset_APC_wt_filtered[["Spatial"]]$counts
+WT_cells_hd <- colnames(subset_APC_wt_filtered[["Spatial"]])
+coords <- GetTissueCoordinates(subset_APC_wt_filtered)[WT_cells_hd, 1:2]
+
+query.APC.wt <- SpatialRNA(coords, counts_hd, colSums(counts_hd))
+
+RCTD.wt.APC <- create.RCTD(query.APC.wt, reference, max_cores = 7)
+RCTD.wt.APC <- run.RCTD(RCTD.wt.APC, doublet_mode = "doublet")
+```
+
+
+```{r}
+saveRDS(RCTD.wt.APC, paste0(dir.s, "/RCTD.wt.APC.rds"))
+
+RCTD.wt.APC <- readRDS(paste0(dir.s, "/RCTD.wt.APC.rds"))
+```
+
+```{r}
+#determine optimal filter threshold
+## --- Inputs you already have -----------------------------------------------
+results_df <- RCTD.wt.APC@results$results_df
+weights    <- RCTD.wt.APC@results$weights
+
+## Pull nUMI per spot (classic RCTD -> SpatialRNA; Bioc -> SpatialExperiment)
+get_nUMI <- function(RCTD) {
+  out <- NULL
+  # classic spacexr object
+  out <- tryCatch(RCTD@spatialRNA@nUMI, error = function(e) NULL)
+  if (!is.null(out)) return(out)
+  # Bioconductor version (stored in colData)
+  out <- tryCatch(SummarizedExperiment::colData(RCTD@spatialRNA)$nUMI, error = function(e) NULL)
+  if (!is.null(out)) { names(out) <- colnames(RCTD@spatialRNA); return(out) }
+  stop("Could not locate nUMI; please supply a named numeric vector of nUMI per spot.")
+}
+nUMI_vec <- get_nUMI(RCTD.wt.APC)
+
+## --- Compute primary weight -------------------------------------------------
+primary_weights <- vapply(seq_len(nrow(results_df)), function(i) {
+  spot <- rownames(results_df)[i]
+  ct   <- results_df$first_type[i]
+  weights[spot, ct]
+}, numeric(1))
+
+results_df$primary_weight <- primary_weights
+results_df$nUMI           <- nUMI_vec[rownames(results_df)]
+
+## --- Find a data-driven 'knee' in primary_weight ---------------------------
+## Kneedle-style elbow on the sorted primary_weight ECDF
+find_knee <- function(w) {
+  w <- sort(w)
+  n <- length(w)
+  if (n < 10) return(NA_real_)
+  x <- seq_len(n) / n
+  # line through (x1,w1) and (xn,wn) ~ (1/n, min) to (1, max)
+  x1 <- x[1]; y1 <- w[1]; xN <- x[n]; yN <- w[n]
+  # distance from each point to the line
+  # line ax + by + c = 0
+  a <- (y1 - yN)
+  b <- (xN - x1)
+  c <- (x1*yN - xN*y1)
+  # normalized perpendicular distance
+  d <- abs(a*x + b*w + c) / sqrt(a^2 + b^2)
+  knee_idx <- which.max(d)
+  knee_val <- w[knee_idx]
+  knee_val
+}
+knee <- find_knee(results_df$primary_weight)
+
+results_df_plot <- subset(results_df, !is.na(primary_weight))
+
+# 1) Histogram with knee and shaded kept area
+p1 <- ggplot(results_df_plot, aes(x = primary_weight)) +
+  geom_histogram(bins = 40) +
+  geom_vline(xintercept = knee, linetype = "dashed", linewidth = 0.8) +
+  annotate("rect", xmin = knee, xmax = Inf, ymin = -Inf, ymax = Inf, alpha = 0.08) +
+  labs(
+    title = "Primary weight distribution",
+    x = "primary_weight", y = "count",
+    subtitle = sprintf("Global knee = %.3f (kept region shaded)", knee)
+  )
+
+# 2) Sorted curve with knee point and endpoint line (the “knee” geometry)
+w_sorted <- sort(results_df_plot$primary_weight)
+n <- length(w_sorted)
+df_sorted <- data.frame(x = seq_len(n) / n, y = w_sorted)
+
+# Line through endpoints of the sorted curve
+line_y <- function(x) {
+  y1 <- w_sorted[1]; yN <- w_sorted[n]
+  x1 <- 1 / n;       xN <- 1
+  y1 + (yN - y1) * (x - x1) / (xN - x1)
+}
+df_sorted$y_line <- line_y(df_sorted$x)
+
+# Knee row (closest y to knee on the sorted curve) for highlighting
+knee_idx <- which.min(abs(df_sorted$y - knee))
+knee_pt  <- df_sorted[knee_idx, ]
+
+p2 <- ggplot(df_sorted, aes(x, y)) +
+  geom_line() +
+  geom_line(aes(y = y_line), linetype = "dotted") +
+  geom_point(data = knee_pt, size = 2) +
+  geom_segment(aes(x = knee_pt$x, xend = knee_pt$x, y = knee_pt$y, yend = knee),
+               linetype = "dashed") +
+  geom_hline(yintercept = knee, linetype = "dashed") +
+  labs(
+    title = "Sorted primary_weight with knee",
+    subtitle = "Solid: weights · Dotted: endpoint line · Point: knee",
+    x = "ECDF x (rank / n)", y = "primary_weight"
+  )
+
+# Print both
+print(p1)
+print(p2)
+
+# Quick summary
+keep_mask <- results_df$primary_weight >= knee
+cat(sprintf("\nKept %d / %d spots (%.1f%%) with primary_weight ≥ %.3f\n",
+            sum(keep_mask, na.rm = TRUE),
+            nrow(results_df),
+            100 * mean(keep_mask, na.rm = TRUE),
+            knee))
+
+# Histogram
+ggplot2::ggsave(filename = file.path(dir.s, "primary_weight_hist.png"),
+                plot = p1, width = 7, height = 5, dpi = 300)
+
+# Sorted curve
+ggplot2::ggsave(filename = file.path(dir.s, "primary_weight_sorted_knee.png"),
+                plot = p2, width = 7, height = 5, dpi = 300)
+```
+
+
+
+```{r}
+# Extract weights and results_df
+results_df <- RCTD.wt.APC@results$results_df
+weights <- RCTD.wt.APC@results$weights
+
+# Extract primary weights for first_type
+primary_weights <- sapply(1:nrow(results_df), function(i) {
+    spot <- rownames(results_df)[i]
+    cell_type <- results_df$first_type[i]
+    weights[spot, cell_type]
+})
+
+# Create primary_weights_df
+primary_weights_df <- data.frame(
+    spot = rownames(results_df),
+    first_type = results_df$first_type,
+    primary_weight = primary_weights
+)
+
+# Filter spots based on the threshold
+threshold <- knee  # Adjust as needed
+filtered_primary_weights_df <- primary_weights_df[primary_weights_df$primary_weight >= threshold, ]
+
+# Filter results_df for spots passing the threshold
+filtered_results_df <- results_df[rownames(results_df) %in% filtered_primary_weights_df$spot, ]
+
+# Create named vector for mac_type_filtered
+mac_type_filtered <- filtered_results_df$first_type
+names(mac_type_filtered) <- rownames(filtered_results_df)
+
+#create full metadata table
+full_MAC <- rep(NA, ncol(WT))
+names(full_MAC) <- colnames(WT)
+
+# Fill in the values for cells that are present in mac_type_filtered
+full_MAC[names(mac_type_filtered)] <- mac_type_filtered
+
+table(full_MAC)
+
+# Now add the complete metadata vector
+WT <- AddMetaData(object = WT, metadata = full_MAC, col.name = "MAC_type_filtered")
+
+
+# Add original first_type as MAC_type
+MAC_type <- results_df$first_type
+names(MAC_type) <- rownames(results_df)
+
+head(full_MAC)
+
+#create full metadata table
+full_MAC <- rep(NA, ncol(WT))
+names(full_MAC) <- colnames(WT)
+
+full_MAC[names(MAC_type)] <- MAC_type
+
+WT <- AddMetaData(WT, metadata = full_MAC, col.name = "MAC_type")
+
+# Confirm metadata addition
+table(WT@meta.data$MAC_type_filtered, useNA = "ifany")
+table(WT@meta.data$MAC_type, useNA = "ifany")
+```
+
+#transfer spatial data from previous object
+```{r}
+WT_previous <- readRDS(paste0(dir.s, "/WT.spatial8.rds"))
+names(WT_previous@meta.data)
+
+
+# Extract the desired metadata columns from WT_previous
+metadata_to_transfer <- WT_previous@meta.data[, c("distance_to_border_um", "distance_to_hb_um")]
+
+dim(metadata_to_transfer)
+
+# Add the metadata to the WT object
+WT <- AddMetaData(WT, metadata = metadata_to_transfer)
+
+names(WT@meta.data)
+
+metadata_to_export <- WT@meta.data[, c("distance_to_border_um", "distance_to_hb_um", "MAC_type_filtered", "MAC_type", "first_type", "first_type_filtered")]
+
+dim(metadata_to_export)
+colnames(metadata_to_export)
+table(metadata_to_export$first_type_filtered, useNA = "ifany")
+
+
+write.csv(metadata_to_export, file = paste0(dir.s, "/WT_metadata_export.csv"), row.names = TRUE)
+
+
+```
+
+
+
+```{r}
+saveRDS(WT, paste0(dir.s, "/WT.spatial_annotated.rds"))
+```
+
+
+
+

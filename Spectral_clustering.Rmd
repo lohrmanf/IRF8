@@ -1,0 +1,495 @@
+---
+title: "Zürich"
+output: html_document
+date: "2024-04-26"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(flowCore)
+library(FlowSOM)
+library(reshape2)
+library(umap)
+library(ggplot2)
+library(RColorBrewer)
+library(cowplot)
+library(tidyverse)
+library(scales)
+library(ComplexHeatmap)
+dir<- "Results"
+dir.pl <- "Results/plots"
+dir.hm <- "Results/heatmaps"
+
+#data <- readRDS("Skin_CD11bCD64_steadystate_transformed.rds")
+
+flowsom.meta <- readRDS(paste0(dir, "/umap_cluster_data_WT_IRF.rds"))
+
+```
+
+#define UMAPS with steady state only WT and IRF
+```{r}
+head(data)
+
+table(data$file_name)
+
+data$cell_id <- as.character(data$cell_id)
+
+data <- data[, !colnames(data) %in% "file_name"]
+
+table(data$group_id)
+
+data <- data[data$group_id %in% c("WT", "IRF8KO"), ]
+
+#define panel for clustering:
+#clustering with CD44, MHCII, CD88, Folr2, Ly6C, CD4, CX3CR1
+
+panel <- colnames(data)
+panel_clust <- c("mhcii", "cd44", "cd88", "cd4", "ly6c", "cx3cr1", "forl2")
+data_clust  <- data[, c("cell_id", panel_clust)]
+
+setdiff(c("cell_id", panel_clust), names(data))
+
+head(data_clust)
+
+data_input_umap <- data_clust[, !colnames(data_clust) %in% "cell_id"]
+
+data_input_umap <- as.data.frame(lapply(data_input_umap, as.numeric))
+
+data_input_umap <- as.matrix(data_input_umap)
+head(data_input_umap)
+
+
+set.seed(1)
+
+#provide settings here (n_neighbors = 100, min_dist = 0.2, spread=2)
+data_umap <-  umap(data_input_umap, n_neighbors = 100, min_dist = 0.2, n_components = 2, metric = "euclidean", spread=2,  verbose =T)
+
+plot(data_umap$layout)
+
+```
+
+```{r}
+
+set.seed(1)
+#check for best umap
+
+# Define the parameter sequences
+n_neighbors_values <- round(seq(10, 100, length.out = 3))
+min_dist_values    <- seq(0.2, 1.9, length.out = 4)
+
+# Open a PDF device to save plots (one plot per page)
+pdf("umap_plots.pdf")
+
+# Loop through each combination of parameters
+for (nn in n_neighbors_values) {
+  for (md in min_dist_values) {
+    
+    # Try running UMAP with the current parameters
+    tryCatch({
+      cat("Running UMAP with n_neighbors =", nn, "and min_dist =", md, "\n")
+      
+      # Run UMAP
+      data_umap <- umap(data_input_umap,
+                        n_neighbors = nn,
+                        min_dist = md,
+                        n_components = 2,
+                        metric = "euclidean",
+                        verbose = TRUE,
+                        spread=2)
+      
+      # Check if the UMAP result has a layout to plot
+      if (!is.null(data_umap$layout)) {
+        plot(data_umap$layout,
+             main = paste("n_neighbors =", nn, ", min_dist =", md),
+             xlab = "UMAP1",
+             ylab = "UMAP2")
+      } else {
+        warning("UMAP output did not contain a layout. Skipping this combination.")
+      }
+      
+    }, error = function(e) {
+      # If an error occurs, print a message and skip to the next combination
+      message("Combination n_neighbors =", nn, "and min_dist =", md, "failed: ", e$message)
+    })
+  }
+}
+
+# Close the PDF device
+dev.off()
+
+
+```
+
+
+
+```{r}
+umap <- as.data.frame(data_umap$layout)
+
+colnames(umap) <- c("UMAP1", "UMAP2")
+
+umap$cell_id <- data_clust[,"cell_id"]
+
+umap_WT_Irf <- merge(umap, data, by = "cell_id")
+
+ggplot(umap_WT_Irf, aes(x = UMAP1, y = UMAP2, color = group_id)) +
+  geom_point(size = 0.15, alpha=0.6) +
+  coord_fixed(ratio = 1) +
+  facet_wrap(~ group_id)+
+  theme_minimal()
+
+
+#saveRDS(umap_WT_Irf, paste0(dir, "/umap_WT_Irf_v1.rds"))
+```
+
+
+```{r}
+#Flowsom
+# run FlowSOM (with set.seed for reproducibility, use only data)
+# alternatives: set.seed with k=7
+
+set.seed(1)
+data_flowsom <- data.matrix(data)
+out_fSOM <- ReadInput(flowFrame(exprs = data_flowsom, desc = list(FIL = 1)), transform = FALSE, scale = FALSE, compensate = FALSE)
+
+out_fSOM <- FlowSOM::BuildSOM(out_fSOM, colsToUse = panel_clust)
+out_fSOM <- FlowSOM::BuildMST(out_fSOM)
+labels <- out_fSOM$map$mapping[,1]
+out_meta <- FlowSOM::metaClustering_consensus(out_fSOM$map$codes, k = 7)
+
+meta_results <- data.frame(data)
+meta_results <- cbind(meta_results, as.factor(out_meta[labels]))
+colnames(meta_results)
+table(meta_results$`as.factor(out_meta[labels])`)
+colnames(meta_results)[26] <- c("Cluster")
+
+new_columns <- setdiff(colnames(umap_WT_Irf), colnames(meta_results))
+umap_data_subset <- umap_WT_Irf[, c("cell_id", new_columns)]
+colnames(umap_data_subset)
+
+# Merge the meta_results and umap_data_subset by 'cell_id'
+flowsom.meta <- merge(meta_results, umap_data_subset, by = "cell_id")
+colnames(flowsom.meta)
+
+
+```
+
+```{r}
+#CAVE: Cluster renaming on saved object, change accordingly if running the script from start
+
+# Convert the factor to character for easier manipulation
+
+
+#flowsom.meta$Cluster <- as.character(flowsom.meta$Cluster)
+
+
+#flowsom.meta$Cluster[flowsom.meta$Cluster == "1"] <- "4H"
+
+
+flowsom.meta$Cluster <- factor(flowsom.meta$Cluster, levels = c("1", "2", "3", "4H", "4I"))
+
+
+colors <- c(
+  "1" = "#E76F51",
+  "2" = "#E9C46A",
+  "3" = "#36BA98",
+  "4H" = "#03396c",
+  "4I" = "#005b96",
+  "4C" = "#6497b1",
+  "4R" = "#b3cde0"
+)
+
+
+order <- c("WT", "IRF8KO")
+flowsom.meta$group_id <- factor(flowsom.meta$group_id, levels = order)
+
+
+ggplot(flowsom.meta, aes(x = UMAP1, y = UMAP2, color = Cluster)) +
+  geom_point(size = 0.15, alpha = 0.6) +
+  coord_fixed(ratio = 1) +
+  scale_colour_manual(
+    name = "Cluster",                     
+    values = colors,                      
+    labels = c("1: Monocyte-like", "2: MHC+", "3: sNaM", "4H: Homeostatic", "4I: Inflammatory")  
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 4))) +  # Changes legend symbol size
+  facet_wrap(~ group_id) +
+  theme_minimal() +
+  scale_x_continuous(name = "UMAP 1") +
+  scale_y_continuous(name = "UMAP 2")
+
+
+ggsave(paste0(dir.pl, "Dimplot_split.png"), width = 6, height = 3.5, dpi = 600)
+
+
+```
+
+
+```{r}
+
+flowsom.meta <- flowsom.meta %>%
+  mutate(replicate = case_when(
+    group_id == "IRF8KO" & gate.source == 4 ~ "I1",
+    group_id == "IRF8KO" & gate.source == 5 ~ "I2",
+    group_id == "IRF8KO" & gate.source == 6 ~ "I3",
+    group_id == "WT"    & gate.source == 7 ~ "W1",
+    group_id == "WT"    & gate.source == 9 ~ "W2",
+    group_id == "WT"    & gate.source == 10 ~ "W3"
+  ))
+
+
+variables <- colnames(flowsom.meta)
+variables <- variables[!variables %in% c("cell_id", "sample_id", "Cluster", "UMAP1", "UMAP2", "Ly6G", "group_id", "gate.source", "replicate")]
+
+variables_upper <- toupper(variables)
+
+name_mapping <- setNames(variables_upper, variables)
+
+colnames(flowsom.meta) <- ifelse(colnames(flowsom.meta) %in% variables, toupper(colnames(flowsom.meta)), colnames(flowsom.meta))
+
+flowsom.meta <- flowsom.meta %>%
+  rename(FOLR2 = FORL2)
+
+saveRDS(flowsom.meta, paste0(dir, "/umap_cluster_data_WT_IRF.rds"))
+```
+
+
+#stacked barcharts
+```{r}
+cluster_counts <- flowsom.meta %>%
+  group_by(group_id, Cluster) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+# Calculate total counts per genotype and proportions
+cluster_counts <- cluster_counts %>%
+  group_by(group_id) %>%
+  mutate(total = sum(count),
+         proportion = count / total) %>%
+  ungroup()
+
+# Set the desired order for group_id
+cluster_counts$group_id <- factor(cluster_counts$group_id, levels = c("WT", "IRF8KO"))
+
+# Set Cluster as a factor (if not already)
+cluster_counts$Cluster <- factor(cluster_counts$Cluster)
+
+ggplot(cluster_counts, aes(x = group_id, y = proportion, fill = Cluster)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_x_discrete(labels = c("WT" = "WT", "IRF8KO" = bquote(italic(Irf8^"-/-")))) +
+  scale_fill_manual(values = colors) +
+  labs(x = "", y = "Percentage of Cells", fill = "Cluster", title = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+ggsave(paste0(dir.pl, "Cluster_proportions.png"), width= 2, height=3, dpi= 600)
+```
+
+
+#statistics for cluster abundance
+#1. proptable
+```{r}
+# Calculate counts per cluster per replicate
+cluster_counts <- flowsom.meta %>%
+  group_by(replicate, Cluster) %>%
+  summarise(count = n(), .groups = 'drop')
+
+cluster_proportions <- cluster_counts %>%
+  group_by(replicate) %>%
+  mutate(proportion = (count / sum(count)) * 100) %>%
+  ungroup()
+
+proportion_table <- cluster_proportions %>%
+  select(Cluster, replicate, proportion) %>%
+  pivot_wider(names_from = replicate, values_from = proportion)
+
+# View the proportion table
+print(proportion_table)
+
+```
+
+#test cluster 1
+```{r}
+cluster1 <- proportion_table[proportion_table$Cluster == 1, ]
+print(cluster1)
+
+cols_I <- c("I1", "I2", "I3")
+cols_W <- c("W1", "W2", "W3")
+
+# Compute group means and standard deviations
+values_I <- as.numeric(cluster1[, cols_I])
+values_W <- as.numeric(cluster1[, cols_W])
+cat("Group I: mean =", mean(values_I), "sd =", sd(values_I), "\n")
+cat("Group W: mean =", mean(values_W), "sd =", sd(values_W), "\n")
+
+# Run the t-test manually for cluster1
+t_test_res <- t.test(values_I, values_W)
+print(t_test_res)
+```
+
+
+```{r}
+cluster_proportions_individual_replicates_export <- cluster_proportions_replicate %>%
+  transmute(
+    group_id,
+    replicate,
+    Cluster,
+    count,
+    total_cells_replicate,
+    proportion_percent = format(
+      round(proportion_percent, 6),
+      scientific = FALSE,
+      trim = TRUE
+    )
+  )
+
+write.csv(
+  cluster_proportions_individual_replicates_export,
+  paste0(dir, "/cluster_proportions_individual_replicates.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# Calculate mean and SD per genotype/cluster combination
+cluster_proportion_summary <- cluster_proportions_replicate %>%
+  group_by(group_id, Cluster) %>%
+  summarise(
+    n_replicates = n(),
+    mean_proportion = mean(proportion, na.rm = TRUE),
+    mean_percent = mean(proportion_percent, na.rm = TRUE),
+    sd_percent = sd(proportion_percent, na.rm = TRUE),
+    sem_percent = sd_percent / sqrt(n_replicates),
+    .groups = "drop"
+  )
+
+# Export genotype/cluster summary
+write_csv(
+  cluster_proportion_summary,
+  paste0(dir, "cluster_proportions_mean_by_genotype_cluster.csv")
+)
+
+# Optional wide table, similar to your current proportion_table
+proportion_table_wide <- cluster_proportions_replicate %>%
+  select(Cluster, group_id, replicate, proportion_percent) %>%
+  pivot_wider(names_from = replicate, values_from = proportion_percent)
+
+write_csv(
+  proportion_table_wide,
+  paste0(dir, "cluster_proportions_replicates_wide.csv")
+)
+```
+
+
+
+#heatmaps per marker
+```{r}
+colnames(flowsom.meta)
+
+selected_variables <- c("FOLR2", "CD4",  "CD44", "LY6C", "CD88", "CX3CR1", "MHCII")
+
+# Define the desired order of replicates
+desired_replicate_order <- c(
+  "W1", "W2", "W3",
+  "I1", "I2", "I3")
+
+
+# Aggregate data: mean of selected variables per Cluster per replicate
+aggregated_data <- flowsom.meta %>%
+  group_by(replicate, Cluster) %>%
+  summarise(across(all_of(selected_variables), mean, .names = "mean_{col}"), .groups = 'drop')
+
+# Initialize a list to store matrices for each variable
+heatmap_matrices <- list()
+
+for (var in selected_variables) {
+  
+  # Extract the relevant columns using all_of() to reference the external column name
+  data_var <- aggregated_data %>%
+    select(replicate, Cluster, all_of(paste0("mean_", var))) %>%
+    rename(!!var := !!sym(paste0("mean_", var))) %>%
+    arrange(as.numeric(as.character(Cluster)))  # Ensure clusters are ordered numerically
+  
+  # Pivot the data to wide format: rows=Cluster, columns=replicate
+  data_matrix <- data_var %>%
+    pivot_wider(names_from = replicate, values_from = var) %>%
+    arrange(as.numeric(as.character(Cluster)))  # Ensure consistent ordering
+  
+  # Convert to matrix and set row names
+  mat <- as.matrix(data_matrix[,-1])  # Exclude 'Cluster' column
+  rownames(mat) <- data_matrix$Cluster
+  
+  # Store the matrix in the list with the variable name as the key
+  heatmap_matrices[[var]] <- mat
+}
+
+
+
+
+
+# Function to reorder columns based on desired order
+reorder_columns <- function(mat, desired_order) {
+  # Identify replicates present in the matrix
+  existing_replicates <- colnames(mat)
+  
+  # Determine replicates to include (present in both desired_order and matrix)
+  replicates_to_include <- intersect(desired_order, existing_replicates)
+  
+  # Reorder columns based on replicates_to_include
+  mat_reordered <- mat[, replicates_to_include, drop = FALSE]
+  
+  return(mat_reordered)
+}
+
+# Apply the reordering to all matrices in the list
+heatmap_matrices_ordered <- lapply(heatmap_matrices, reorder_columns, desired_order = desired_replicate_order)
+
+
+
+col_fun <- rev(hcl.colors(10, "RdYlBu")) 
+
+# Loop through each variable to create heatmaps
+for (var in selected_variables) {
+  
+  # Retrieve the matrix for the current variable
+  mat <- heatmap_matrices_ordered[[var]]
+  
+  # Create the heatmap object
+  ht <- Heatmap(mat,
+                name = var,  # Legend title
+                col = col_fun,
+                cluster_rows = F,    # Cluster rows (clusters)
+                cluster_columns = F, # Cluster columns (replicates)
+                show_row_names = TRUE,
+                show_column_names = TRUE,
+                row_names_side = "left",
+                column_names_side = "bottom",
+                column_title = var,
+                heatmap_legend_param = list(title = var))
+  
+  # Draw the heatmap
+  draw(ht, heatmap_legend_side = "right")
+  
+  # Optional: Save the heatmap to a file
+  png(filename = paste0(dir.hm, "Heatmap_", var, ".png"), width = 450, height = 450, res = 150)
+  draw(ht, heatmap_legend_side = "right")
+  dev.off()
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

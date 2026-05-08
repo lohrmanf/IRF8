@@ -1,0 +1,228 @@
+---
+title: "3FindMarkers"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(openxlsx)
+library(presto)
+library(RColorBrewer)
+library(ggplot2)
+
+dir <- "Results/3FindMarkers"
+dir.inf <- file.path(dir, "infected_comp")
+dir.resinf <- file.path(dir, "Res_infected_comp")
+
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir.inf, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir.resinf, recursive = TRUE, showWarnings = FALSE)
+
+p_value <- 0.05
+
+mac <- readRDS("Results/2_Integration/mac.RDS")
+DefaultAssay(mac) <- "RNA"
+
+mac <- NormalizeData(mac, normalization.method = "LogNormalize")
+
+A <- subset(mac, subset = condition == "A")
+B <- subset(mac, subset = condition == "B")
+C <- subset(mac, subset = condition == "C")
+D <- subset(mac, subset = condition == "D")
+
+infected <- subset(mac, subset = treatment == "infected")
+steady <- subset(mac, subset = treatment == "steady")
+WT <- subset(mac, subset = genotype == "WT")
+Irf8ko <- subset(mac, subset = genotype == "Irf8ko")
+
+```
+
+
+# per condition
+```{r}
+condition_objects <- list(
+  A = A,
+  B = B,
+  C = C,
+  D = D
+)
+
+condition_labels <- c(
+  A = "WT_steady_markers",
+  B = "WT_infected_markers",
+  C = "Irf8_steady_markers",
+  D = "Irf8_infected_markers"
+)
+
+condition_markers <- lapply(names(condition_objects), function(cond) {
+  markers <- FindAllMarkers(
+    condition_objects[[cond]],
+    only.pos = TRUE,
+    min.pct = 0.25,
+    logfc.threshold = 0.25
+  )
+  
+  markers <- markers |>
+    filter(p_val_adj < p_value) |>
+    arrange(cluster, desc(avg_log2FC))
+  
+  write.xlsx(
+    markers,
+    file = file.path(dir, paste0(condition_labels[[cond]], ".xlsx")),
+    rowNames = FALSE
+  )
+  
+  markers
+})
+
+names(condition_markers) <- names(condition_objects)
+
+sign.A.markers <- condition_markers$A
+sign.B.markers <- condition_markers$B
+sign.C.markers <- condition_markers$C
+sign.D.markers <- condition_markers$D
+```
+
+#generate single excel with separate sheets
+```{r}
+wb <- createWorkbook()
+
+marker_sheets <- list(
+  WT_steady_markers = sign.A.markers,
+  WT_infected_markers = sign.B.markers,
+  Irf8_steady_markers = sign.C.markers,
+  Irf8_infected_markers = sign.D.markers
+)
+
+for (sheet_name in names(marker_sheets)) {
+  addWorksheet(wb, sheet_name)
+  writeData(wb, sheet_name, marker_sheets[[sheet_name]])
+}
+
+saveWorkbook(
+  wb,
+  file = file.path(dir, "Supp_table_6_markers_infection.xlsx"),
+  overwrite = TRUE
+)
+
+```
+
+
+```{r}
+cluster_distribution_condition <- prop.table(table(Idents(mac), mac$condition), margin = 2) |>
+  as.data.frame.matrix() |>
+  round(4)
+
+write.xlsx(
+  cluster_distribution_condition,
+  file = file.path(dir, "cl_prop.xlsx"),
+  rowNames = TRUE
+)
+
+cluster_distribution_sample <- prop.table(table(Idents(mac), mac$orig.ident), margin = 2) |>
+  as.data.frame.matrix() |>
+  round(4)
+
+write.xlsx(
+  cluster_distribution_sample,
+  file = file.path(dir, "cl_prop_individual.xlsx"),
+  rowNames = TRUE
+)
+```
+
+#heatmap
+```{r}
+colors <- c(
+  "#a6cee3", "#1f78b4", "#b2df8a", "#33a02c", "#e31a1c", "#ff7f00",
+  "#cab2d6", "#6a3d9a", "#ffff99", "#b15928", "#fb9a99", "#005F6A",
+  "#FF70AB", "#640D6B", "#A0DEFF", "#E65C19", "#F8D082"
+)
+
+marker_lists <- list(
+  A = sign.A.markers,
+  B = sign.B.markers,
+  C = sign.C.markers,
+  D = sign.D.markers
+)
+
+object_lists <- list(
+  A = A,
+  B = B,
+  C = C,
+  D = D
+)
+
+for (cond in names(marker_lists)) {
+  top_markers <- marker_lists[[cond]] |>
+    group_by(cluster) |>
+    slice_max(order_by = avg_log2FC, n = 5) |>
+    ungroup()
+  
+  genes_use <- unique(top_markers$gene)
+  
+  p <- DoHeatmap(
+    object_lists[[cond]],
+    features = genes_use,
+    group.colors = colors
+  ) +
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")))
+  
+  ggsave(
+    filename = file.path(dir, paste0("Heatmap.", cond, ".png")),
+    plot = p,
+    height = 8,
+    width = 10,
+    dpi = 600
+  )
+}
+```
+
+#compare infected
+```{r}
+infected$cluster.condition <- paste(Idents(infected), infected$genotype, sep = "_")
+Idents(infected) <- "cluster.condition"
+
+marker_cluster_infected <- function(object, cluster_number, p_value, outdir) {
+  ident_1 <- paste(cluster_number, "WT", sep = "_")
+  ident_2 <- paste(cluster_number, "Irf8ko", sep = "_")
+  
+  message("Comparing identities: ", ident_1, " vs ", ident_2)
+  
+  idents_present <- c(ident_1, ident_2) %in% levels(Idents(object))
+  if (!all(idents_present)) {
+    warning("Skipping cluster ", cluster_number, " because one or both identities are absent.")
+    return(NULL)
+  }
+  
+  markers <- FindMarkers(
+    object,
+    ident.1 = ident_1,
+    ident.2 = ident_2,
+    only.pos = TRUE,
+    min.pct = 0.25,
+    logfc.threshold = 0.5
+  )
+  
+  markers <- tibble(gene = rownames(markers), markers) |>
+    filter(p_val_adj < p_value) |>
+    arrange(desc(avg_log2FC))
+  
+  write.xlsx(
+    markers,
+    file = file.path(outdir, paste0("inf.cl", cluster_number, ".xlsx")),
+    rowNames = FALSE
+  )
+  
+  markers
+}
+
+infected_cluster_markers <- setNames(
+  lapply(0:13, function(i) marker_cluster_infected(infected, i, p_value, dir.inf)),
+  paste0("cl", 0:13)
+)
+```
+
+

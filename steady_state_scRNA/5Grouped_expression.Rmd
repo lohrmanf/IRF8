@@ -17,18 +17,13 @@ library(ggpubr)
 library(Nebulosa)
 
 dir <- "Results/grouped_expressions"
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
 
 mac <- readRDS("Results/mac_filter_merge.RDS")
 
 mac.wt <- subset(x=mac, subset=Experiment2 == "WT")
 DefaultAssay(mac.wt) <- "RNA"
 mac.wt<- NormalizeData(mac.wt, normalization.method = "LogNormalize") 
-
-mac$new_clusters <- factor(mac$new_clusters, 
-                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
-
-Idents(mac) <- mac$new_clusters
-
 
 mac.wt$new_clusters <- factor(mac.wt$new_clusters, 
                                 levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
@@ -173,48 +168,39 @@ ggsave(paste0(dir,"/Vln-WT_clust.png"), height=3.2, width=7, dpi=600)
 #AggCount for BM-mac and Res-mac in scRNAseq dataset
 ```{r}
 #BM
-BM.list <- read_xlsx("gene_lists/Res-BM.xlsx", sheet = "ranked up in BM")
+BM.list <- read_xlsx("gene_lists/Res-BM/Res-BM.xlsx", sheet = "ranked up in BM")
 BM.genes <- BM.list$Symbol
 BM_mac <- intersect(total.gene.list, BM.genes)
-list(BM_mac)
 
+# Get summed expression of genes of interest per cell
+agg.BM_mac <- colSums(x = mac.wt@assays$RNA@data[BM_mac, ], na.rm = TRUE)
 
-# Get mean expression of genes of interest per cell
-agg.BM_mac <- colSums(x = mac@assays$RNA@data[BM_mac, ], na.rm = TRUE)
-
-# Add mean expression values in 'object@meta.data$ROS.score'
-if (all(names(x = agg.BM_mac) == rownames(x = mac@meta.data))) {
-  mac@meta.data$BM_mac <- agg.BM_mac
+# Add summed expression values in 'object@meta.data$ROS.score'
+if (all(names(x = agg.BM_mac) == rownames(x = mac.wt@meta.data))) {
+  mac.wt@meta.data$BM_mac <- agg.BM_mac
 }
 
 #Res
-Res.list <- read_xlsx("gene_lists/Res-BM.xlsx", sheet = "ranked up in Res")
+Res.list <- read_xlsx("gene_lists/Res-BM/Res-BM.xlsx", sheet = "ranked up in Res")
 Res.genes <- Res.list$Symbol
 Res_mac <- intersect(total.gene.list, Res.genes)
-list(Res_mac)
 
+# Get summed expression of genes of interest per cell
+agg.Res_mac <- colSums(x = mac.wt@assays$RNA@data[Res_mac, ], na.rm = TRUE)
 
-# Get mean expression of genes of interest per cell
-agg.Res_mac <- colSums(x = mac@assays$RNA@data[Res_mac, ], na.rm = TRUE)
-
-# Add mean expression values in 'object@meta.data$ROS.score'
-if (all(names(x = agg.Res_mac) == rownames(x = mac@meta.data))) {
-  mac@meta.data$Res_mac <- agg.Res_mac
+# Add summed expression values in 'object@meta.data$ROS.score'
+if (all(names(x = agg.Res_mac) == rownames(x = mac.wt@meta.data))) {
+  mac.wt@meta.data$Res_mac <- agg.Res_mac
 }
 
-
-mac.wt <- subset(x=mac,subset=Experiment2=="WT")
-
-plot_density(mac.wt, features = "BM_mac", reduction = "umap", size=0.7, slot=data, method="wkde") + 
+plot_density(mac.wt, features = "BM_mac", reduction = "umap", size=0.7, slot="data", method="wkde") + 
         ggtitle("")
 ggsave(paste0(dir,"/wt.BM-Nebu.png"), height=3, width=4, dpi=600)
 
-plot_density(mac.wt, features = "Res_mac", reduction = "umap", size=0.7, slot=data, method="wkde") + 
+plot_density(mac.wt, features = "Res_mac", reduction = "umap", size=0.7, slot="data", method="wkde") + 
         ggtitle("")
 ggsave(paste0(dir,"/wt.Res-Nebu.png"), height=3, width=4, dpi=600)
-
 ```
-
 
 
 

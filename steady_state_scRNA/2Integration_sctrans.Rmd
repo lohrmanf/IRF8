@@ -11,14 +11,14 @@ library(Seurat)
 library(ggplot2)
 library(openxlsx)
 library(Matrix)
-#dir <- "Results/2.3Int_all"
+dir <- "Results/2.3Int_all"
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
 
 # I samples
 I <- readRDS("Results/1ReadinData/I.RDS")
 I[["percent.mt"]] <- PercentageFeatureSet(I, pattern = "^mt-")
 I <- subset(I, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000)
 I <- subset(I, subset= Zbtb46 <2 & Cpa3 <2) 
-
 
 # N samples
 N <- readRDS("Results/1ReadinData/N.RDS")
@@ -27,17 +27,16 @@ N <- subset(N, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000)
 N <- subset(N, subset= Zbtb46 <2 & Cpa3 <2)
 
 #wt sample
-wt <- readRDS("Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Experiment1_wt_irf/data_setup/wt.RDS")
+wt <- readRDS("Q:/IIK-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Experiment1_wt_irf/data_setup/wt.RDS")
 wt[["percent.mt"]] <- PercentageFeatureSet(wt, pattern = "^mt-")
 wt <- subset(wt, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000)
 wt <- subset(wt, subset= Zbtb46 <2 & Cpa3 <2)
 
 #irf sample
-irf <- readRDS("Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Experiment1_wt_irf/data_setup/irf.RDS")
+irf <- readRDS("Q:/IIK-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Experiment1_wt_irf/data_setup/irf.RDS")
 irf[["percent.mt"]] <- PercentageFeatureSet(irf, pattern = "^mt-")
 irf <- subset(irf, subset= percent.mt<5 & nFeature_RNA>200 & nFeature_RNA<5000)
 irf <- subset(irf, subset= Zbtb46 <2 & Cpa3 <2)
-
 ```
 
 # Integrate 
@@ -63,21 +62,14 @@ mac.combined@meta.data$Experiment2[(mac.combined@meta.data$Experiment)=="N"] <- 
 
 # PCA And UMAP
 mac.combined <- RunPCA(mac.combined, verbose=FALSE)
-ElbowPlot(mac.combined, ndims = 50)
-mac.combined <- RunUMAP(mac.combined, reduction = "pca", dims=1:30)
 
-# Plot
-DimPlot(mac.combined, reduction = "umap")
-#ggsave(paste0(dir,"/umap.pdf"), height=5, width=8)
+mac.combined <- RunUMAP(mac.combined, reduction = "pca", dims=1:30)
 
 # Find cluster
 
-
 mac.combined <- FindNeighbors(mac.combined, dims=1:30)
 
-mac.combined <- FindClusters(mac.combined, dims=1:30, resolution= 0.45, random.seed=0)
-
-DimPlot(mac.combined, split.by="Experiment2", reduction = "umap", label=TRUE)
+mac.combined <- FindClusters(mac.combined, resolution= 0.45, random.seed=0)
 
 mac.combined$Experiment2 <- factor(x = mac.combined$Experiment2, levels = c("WT", "IRF8ko"))
 
@@ -89,13 +81,9 @@ saveRDS(mac.combined, paste0(dir,"/all_data.RDS"))
 
 ```
 
-#presentation ready
+#presentation ready cluster naming, merge 2 cluster pairs based on mrtree similarity
 ```{r}
 mac <- readRDS("Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Results/2.3Int_all/all_data.RDS")
-
-mac.backup <- mac
-
-
 
 # Create a new column in the metadata to store the modified cluster information
 mac$new_clusters <- mac$seurat_clusters
@@ -118,7 +106,6 @@ mac$new_clusters[mac$seurat_clusters %in% c("4")] <- "4R"
 mac$new_clusters[mac$seurat_clusters %in% c("5")] <- "4C"
 
 # Remove the entries for cluster 0 from the new_clusters column
-
 mac$new_clusters[mac$new_clusters == c("0")] <- NA
 mac$new_clusters[mac$new_clusters == c("4")] <- NA
 mac$new_clusters[mac$new_clusters == c("5")] <- NA
@@ -133,7 +120,7 @@ mac$new_clusters <- as.factor(mac$new_clusters)
 # Set the active identity to your manually defined "new_clusters" column
 Idents(mac) <- mac$new_clusters
 
-mac_sub7 <- subset(mac, idents = c(1:3, "4H", "4I", "4C", "4R"))
+mac_sub7 <- subset(mac, idents = c("1","2","3","4H","4I","4C","4R"))
 
 # Verify the active identities
 Idents(mac_sub7) <- factor(Idents(mac_sub7), levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
@@ -146,7 +133,6 @@ levels(mac_sub7)
 mac_sub7$new_clusters <- droplevels(mac_sub7$new_clusters)
 
 table(mac_sub7$new_clusters)
-
 
 # 1. Create a vector of new cluster names (one for each original level)
 new_cluster_ids <- c(
@@ -163,18 +149,10 @@ names(new_cluster_ids) <- levels(Idents(mac_sub7))
 
 # 2. Rename the identities in-place with RenameIdents()
 mac_sub7 <- RenameIdents(mac_sub7, new_cluster_ids)
-levels(Idents(mac_sub7))
 
 # 3. Store these new cluster names in the metadata under a new column
 mac_sub7$new_clusters_named <- Idents(mac_sub7)
-
-
 table(mac_sub7$new_clusters_named)
-
 saveRDS(mac_sub7, "Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Results/mac_filter_merge.RDS")
-
-
-
 ```
-
 

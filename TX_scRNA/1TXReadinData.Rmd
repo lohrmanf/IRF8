@@ -4,11 +4,10 @@ output: html_document
 ---
 
 ```{r}
-#no cells in D1
 
 library(Seurat)
-dir <- "Results/1ReadinData"
-dir.create(dir)
+dir <- "Results/1TXReadinData"
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
 
 D_S2.data <- Read10X(data.dir= "Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/scRNA/TX/D/outs/per_sample_outs/sample2/count/sample_feature_bc_matrix")
 D_S2 <- CreateSeuratObject(counts = D_S2.data$`Gene Expression`, project = "D-S2", min.cells = 3, min.features = 200)
@@ -72,13 +71,6 @@ D4 <- AddMetaData(object = D4, metadata = rep("D4", length=nrow(D4@meta.data)),c
 D16 <- merge(D_S5, y = c(D_S6, D_S7, D_S8), add.cell.ids = c("D_S5", "D_S6", "D_S7", "D_S8"), project = "D16")
 D16 <- AddMetaData(object = D16, metadata = rep("D16", length=nrow(D16@meta.data)),col.name = 'Experiment')
 
-#How many cells per replicate?
-table(D4$orig.ident)
-table(D16$orig.ident)
-
-#head(D_S2@meta.data)
-#head(D4@meta.data)
-#head(D16@meta.data)
 
 saveRDS(D4, paste0(dir,"/D4.RDS"))
 saveRDS(D16, paste0(dir,"/D16.RDS"))
@@ -156,13 +148,6 @@ R4 <- AddMetaData(object = R4, metadata = rep("R4", length=nrow(R4@meta.data)),c
 R16 <- merge(R_S6, y = c(R_S7, R_S8), add.cell.ids = c("R_S6", "R_S7", "R_S8"), project = "R16")
 R16 <- AddMetaData(object = R16, metadata = rep("R16", length=nrow(R16@meta.data)),col.name = 'Experiment')
 
-#How many cells per replicate?
-table(R4$orig.ident)
-table(R16$orig.ident)
-
-#head(D_S2@meta.data)
-#head(D4@meta.data)
-#head(D16@meta.data)
 
 saveRDS(R4, paste0(dir,"/R4.RDS"))
 saveRDS(R16, paste0(dir,"/R16.RDS"))

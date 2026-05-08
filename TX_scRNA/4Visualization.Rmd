@@ -6,24 +6,34 @@ editor_options:
   chunk_output_type: console
 ---
 
+###current incompatibility between Seurat v5 + ggplot2 4.0.x; downgrading ggplot2 as suggested by Seurat team
+```{r}
+remove.packages("ggplot2")
+remotes::install_version("ggplot2", version = "3.5.2")
+packageVersion("ggplot2")
+install.packages("patchwork")
+```
+
+
 ```{r setup, include=FALSE}
 library(Seurat)
 library(ggplot2)
 library(openxlsx)
 library(dplyr)
 library(patchwork)
-library(SeuratWrappers)
-library(batchelor)
-library(reticulate)
 library(dittoSeq)
 library(RColorBrewer)
 library(viridis)
-library(SeuratDisk)
+#library(SeuratDisk)
 
-mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
+mac.TX <- readRDS("mac_TX_integrated.RDS")
+#mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat", images    = FALSE)
 
 dir <- "Results/visualization"
 dir.v <- "Results/Violins"
+
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir.v, recursive = TRUE, showWarnings = FALSE)
 
 colors <- c(
   "1" = "#E76F51",
@@ -57,7 +67,6 @@ plot <- DimPlot(
   group.by = "renamed_clusters", 
   raster = FALSE, 
   label = FALSE, 
-  repel = T, 
   pt.size = 1.2, 
   cols = colors
 ) +
@@ -99,7 +108,7 @@ plot <- plot +
             size = 5)
 
 plot
-ggsave(paste0(dir,"/Clusters_UMAP.png"), height=5, width=6, dpi=600)
+ggsave(paste0(dir, "/Clusters_UMAP.png"), plot = plot, height = 5, width = 6, dpi = 600)
 ```
 
 
@@ -112,7 +121,6 @@ plot2 <- DimPlot(
   group.by = "renamed_clusters", 
   raster = FALSE, 
   label = FALSE, 
-  repel = T, 
   pt.size = 1.2, 
   cols = colors
 ) +
@@ -153,7 +161,7 @@ plot2 <- plot2 +
 
 
 plot2
-ggsave(paste0(dir,"/Clusters_split_UMAP.png"), height=5, width=15, dpi=600)
+ggsave(paste0(dir, "/Clusters_split_UMAP.png"), plot = plot2, height = 5, width = 15, dpi = 600)
 
 ```
 
@@ -188,7 +196,7 @@ generate_dotplot <- function(seurat_object, features, object_name) {
     xlab('') +  
     ylab('Cluster') +
     RotatedAxis() +
-    scale_y_discrete(limits = rev) + 
+    scale_y_discrete(limits = rev(levels(Idents(seurat_object)))) + 
     scale_x_discrete(labels = features_italic) +  
     theme(axis.text.y = element_text(color = colors.rev, size = 14, face = "bold"),
           axis.title = element_text(size = 14),
@@ -211,45 +219,178 @@ generate_dotplot(mac.TX, genes2, "TX_reference_mapped")
 
 ```
 
+#visualization of adaptation genes
+
+```{r}
+D16_4_filtered <- read.xlsx("Results/3TXFindMarkers/TX.markers.D16_4_filtered.xlsx")
+
+genes_adaptation <- c(
+  "Csf1r", "Fgfr1", "Cd209d", "Clec10a", "Tnfrsf12a",
+  "Ccl2", "Hbegf", "Ctsk", "Serpinb6a", "Timp2",
+  "Klf4", "Maf", "Notch1", "Fosb", "Igf1",
+  "Csf2rb", "Cd86", "Ptprc", "Ptgs2", "Ccr2", "Thbs1"
+)
+
+generate_experiment_dotplot <- function(seurat_object, marker_table, features, object_name) {
+  # check marker table has Gene column
+  if (!"Gene" %in% colnames(marker_table)) {
+    stop("marker_table must contain a column named 'Gene'.")
+  }
+  
+  # keep requested genes that are present in marker table
+  genes_present <- features[features %in% marker_table$Gene]
+  genes_missing <- setdiff(features, genes_present)
+  
+  if (length(genes_missing) > 0) {
+    warning(
+      "These genes are not present in marker_table: ",
+      paste(genes_missing, collapse = ", ")
+    )
+  }
+  
+  if (length(genes_present) == 0) {
+    stop("None of the selected genes are present in marker_table.")
+  }
+  
+  # also make sure genes exist in the Seurat object
+  genes_present <- genes_present[genes_present %in% rownames(seurat_object)]
+  
+  if (length(genes_present) == 0) {
+    stop("None of the selected genes are present in the Seurat object.")
+  }
+  
+  # set experiment order explicitly
+  seurat_object$Experiment <- factor(
+    seurat_object$Experiment,
+    levels = c("D4", "R4", "D16", "R16")
+  )
+  Idents(seurat_object) <- "Experiment"
+  
+  # italic labels
+  features_italic <- lapply(genes_present, function(x) bquote(italic(.(x))))
+  
+  p <- DotPlot(
+    seurat_object,
+    features = genes_present,
+    group.by = "Experiment",
+    scale = TRUE,
+    cols = "RdYlBu"
+  ) +
+    geom_point(aes(size = pct.exp), shape = 21, colour = "black", stroke = 0.5) +
+    guides(
+      size = guide_legend(
+        override.aes = list(shape = 21, colour = "black", fill = "white"),
+        title = "Percent Expression"
+      )
+    ) +
+    xlab("") +
+    ylab("") +
+    RotatedAxis() +
+    scale_y_discrete(limits = c("D4", "D16", "R4", "R16")) +
+    scale_x_discrete(labels = features_italic) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.title = element_text(size = 14),
+      panel.background = element_blank(),
+      panel.border = element_rect(fill = NA),
+      text = element_text(size = 12),
+      panel.grid.major.x = element_line(color = "grey80"),
+      panel.grid.major.y = element_line(color = "grey80")
+    )
+  
+  filename <- paste0(dir, "/", object_name, "_dotplot.png")
+  
+  ggsave(
+    filename = filename,
+    plot = p,
+    width = 2.8 + length(genes_present) * 0.22,
+    height = 3.8,
+    dpi = 600
+  )
+  
+  return(p)
+}
+
+p_adapt <- generate_experiment_dotplot(
+  seurat_object = mac.TX,
+  marker_table = D16_4_filtered,
+  features = genes_adaptation,
+  object_name = "D16_4_adaptation_genes"
+)
+
+p_adapt
+```
+
+
+#cluster origin split by timepoint
 ```{r}
 
-
+# Ensure experiment order
 mac.TX$Experiment <- factor(mac.TX$Experiment, levels = c("D4", "R4", "D16", "R16"))
 
-levels(mac.TX$Experiment)
+# Colors mapped to Experiment levels (named for easy subsetting)
+cols <- c("D4"="#0000FF", "R4"="#55A0FB", "D16"="#0000FF", "R16"="#55A0FB")
 
-cols=c("#0000FF", "#026c45", "#55A0FB", "#90EE90")
+# Nice labels for legend
+lab_map <- c("D4"="BM-mac",
+             "R4"="Res-mac",
+             "D16"="BM-mac",
+             "R16"="Res-mac")
 
-# Create the stacked bar plot using dittoseq
-dittoBarPlot(object = mac.TX, var = "Experiment", group.by = "renamed_clusters", color.panel=cols, retain.factor.levels=T)+
-  scale_fill_manual(
-    name = "Condition",  
-    values = cols, 
-    labels = c("BM - 4 weeks", "Res - 4 weeks", "BM - 16 weeks", "Res - 16 weeks")
-  ) +
-  labs(title = "Cluster origin", x = "Cluster", y = "Fraction of cells")
+# Pull metadata
+meta <- mac.TX@meta.data
 
-ggsave(paste0(dir, "/Cluster_origin.png"), dpi=600, height=3, width=3)
+# Helper to make a fractional stacked bar for a subset of experiments
+make_plot <- function(exps, title){
+  df <- meta %>%
+    filter(Experiment %in% exps) %>%
+    count(renamed_clusters, Experiment, name = "n") %>%
+    group_by(renamed_clusters) %>%
+    mutate(frac = n / sum(n)) %>%
+    ungroup()
 
+  ggplot(df, aes(x = renamed_clusters, y = frac, fill = Experiment)) +
+    geom_col() +
+    scale_fill_manual(values = cols[exps], breaks = exps, labels = lab_map[exps], name = "") +
+    labs(title = title, x = "Cluster", y = "Fraction of cells") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.02))) +
+    theme_classic(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+p_4   <- make_plot(c("D4","R4"),   "")
+p_16  <- make_plot(c("D16","R16"), "")
+
+# Combine plots; share one legend at the bottom
+combined <- p_4 + p_16 + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+print(combined)
+
+# Save combined figure
+ggsave(paste0(dir, "/Cluster_origin_split.png"), combined, dpi = 600, height = 4, width = 4)
 
 ```
 
 
-```{r}
-FeaturePlot(mac.TX, features = c("Cd74"), reduction = "umap")
-```
 
-#raw numbers
-```{r}
-hist(mac.TX$predicted.new_clusters.score, breaks=30)
-?hist
-tab <- table(mac.TX$Experiment, mac.TX$predicted.new_clusters)
 
-tab_df_matrix <- as.data.frame.matrix(tab)
-write.csv(tab_df_matrix, file = paste0(dir, "/cluster_counts.csv"), row.names = T)
-```
 
-# rename clusters
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### rename clusters - probably needs to be removed
 ```{r}
 table(mac.TX$predicted.new_clusters)
 
@@ -287,15 +428,6 @@ mac.TX$renamed_clusters <- factor(mac.TX$renamed_clusters,
 Idents(mac.TX) <- mac.TX$renamed_clusters
 
 ```
-
-
-#save object
-```{r}
-
-SaveH5Seurat(mac.TX, filename = "mac_TX_integrated.h5Seurat")
-mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
-```
-
 
 
 

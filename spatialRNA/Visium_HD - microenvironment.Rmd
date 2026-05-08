@@ -1,0 +1,878 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-08-03"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(viridis)
+library(RColorBrewer)
+library(patchwork)
+library(ComplexHeatmap)
+library(grid)
+library(circlize)
+
+library(hdf5r)
+library(arrow)
+library(Seurat)
+library(presto)
+
+library(clusterProfiler)
+library(org.Mm.eg.db)
+
+dir.s <- "Setup"
+dir.r <- "Results"
+dir.mic <- "Results/Microenvironment"
+dir.mg <- "Results/Microenvironment/GSEA"
+
+cluster_DE_wt <- readRDS(paste0(dir.mic, "/cluster_DE_wt.RDS"))
+WT <- readRDS(file.path(dir.s, "WT.spatial_annotated.rds"))
+
+colors.mac <- c(
+  "1" = "#E76F51",
+  "2" = "#E9C46A",
+  "3" = "#36BA98",
+  "4" = "#03396c"
+)
+```
+
+
+```{r setup, include=FALSE}
+new_metadata <- as.character(WT@meta.data$MAC_type_filtered)
+
+table(WT@meta.data$MAC_type_filtered, useNA="ifany")
+# 3. Assign the names of the new metadata vector to be the Seurat cell names.
+names(new_metadata) <- rownames(WT@meta.data)
+
+# Optionally check the head to verify the names are now cell barcodes:
+head(new_metadata)
+
+# 4. Add the new metadata column to the Seurat object with AddMetaData()
+WT <- AddMetaData(WT, metadata = new_metadata, col.name = "MAC_type_broad")
+
+
+colnames(WT@meta.data)
+table(WT$MAC_type_broad, useNA="ifany")
+table(WT$first_type, useNA="ifany")
+```
+
+#named colors for cell_type
+```{r}
+levels <- c("FB", "CHFB", "PVC", "KRT", "LEC", "APC-MAC", "LYM", "NEU", "SCH", "VEC", "NA")
+
+all_colors <- c("orange", "#1F78B4", "pink", "#66A61E", "#005F6A",
+                "brown", "#666666", "#A6761D", "yellow", "#6A3D9A", "#BDBDBD")
+
+colors.celltype <- setNames(all_colors, levels)
+```
+
+#add hires image
+```{r}
+WT@images[["slice1"]] <- Read10X_Image(
+  image.dir = "Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter/Florens/visium_HD/re-run/Spaceranger/WT2-auto/outs/binned_outputs/square_008um/Spatial/", image.name = "tissue_hires_image.png")
+```
+
+#Working: "Find neighbours to each spot of a specific cluster WT
+#First, correlate radius to number of neighbor spots
+```{r}
+radius <- 50
+
+calculate_average_neighbors_dual <- function(coord_df, radius, meta_data,
+                                             center_field = "MAC_type_broad",
+                                             neighbor_field = "first_type") {
+  # Centers: MAC_type_broad != NA
+  center_spots <- rownames(meta_data)[!is.na(meta_data[[center_field]])]
+  center_coords <- coord_df[coord_df$spot %in% center_spots, , drop = FALSE]
+  
+  # Neighbor pools
+  neighbor_spots_ft <- rownames(meta_data)[!is.na(meta_data[[neighbor_field]])]
+  neighbor_coords_ft <- coord_df[coord_df$spot %in% neighbor_spots_ft, , drop = FALSE]
+  neighbor_coords_all <- coord_df
+  
+  if (nrow(center_coords) == 0) return(c(avg_first_type = NA_real_, avg_all = NA_real_))
+  if (nrow(neighbor_coords_ft) == 0) avg_first_type <- NA_real_ else {
+    avg_first_type <- mean(sapply(center_coords$spot, function(spot) {
+      target <- center_coords[center_coords$spot == spot, c("x","y"), drop = FALSE]
+      d <- sqrt((neighbor_coords_ft$x - target$x)^2 + (neighbor_coords_ft$y - target$y)^2)
+      sum(d <= radius & neighbor_coords_ft$spot != spot)
+    }))
+  }
+  
+  avg_all <- mean(sapply(center_coords$spot, function(spot) {
+    target <- center_coords[center_coords$spot == spot, c("x","y"), drop = FALSE]
+    d <- sqrt((neighbor_coords_all$x - target$x)^2 + (neighbor_coords_all$y - target$y)^2)
+    sum(d <= radius & neighbor_coords_all$spot != spot)
+  }))
+  
+  c(avg_first_type = avg_first_type, avg_all = avg_all)
+}
+
+# Prepare inputs
+coordinates <- GetTissueCoordinates(WT)
+coord_df <- as.data.frame(coordinates)
+coord_df$spot <- rownames(coord_df)
+meta_data <- WT@meta.data
+
+# Run
+avg_neighbors_both <- calculate_average_neighbors_dual(coord_df, radius, meta_data)
+
+cat(
+  "Average neighbors within", radius, "\n",
+  "  - using centers MAC_type_broad != NA and neighbors first_type != NA:", avg_neighbors_both["avg_first_type"], "\n",
+  "  - using centers MAC_type_broad != NA and neighbors ANY spot:", avg_neighbors_both["avg_all"], "\n"
+)
+```
+
+
+
+```{r}
+
+radius <- 50  
+
+find_neighbors <- function(spot, target_coords, coord_df, radius) {
+  target <- target_coords[spot, c("x", "y")]
+  distances <- sqrt((coord_df$x - target$x)^2 + (coord_df$y - target$y)^2)
+  nearby_spots <- coord_df$spot[distances <= radius & coord_df$spot != spot]  
+  return(nearby_spots)
+}
+
+# Get coordinates 
+coordinates <- GetTissueCoordinates(WT)
+coord_df <- as.data.frame(coordinates)
+coord_df$spot <- rownames(coord_df)
+
+cluster_DE_wt <- list()
+
+for (cluster_id in 1:4) {
+  
+  # Step 1: Identify spots in the current cluster
+  cluster_spots <- WhichCells(WT, expression = MAC_type_broad == cluster_id)
+  
+  target_coords <- coord_df %>% filter(spot %in% cluster_spots)
+  
+  # Step 2: Find neighbors for each spot in the current cluster
+  neighbors <- lapply(cluster_spots, find_neighbors, target_coords = target_coords, coord_df = coord_df, radius = radius)
+  names(neighbors) <- cluster_spots
+  
+  # Combine all neighborhood spots, excluding each original spot
+  all_neighbors <- unique(unlist(lapply(names(neighbors), function(spot) {
+    setdiff(neighbors[[spot]], spot)
+  })))
+  
+  # Step 3: Set identities for DE analysis
+  Idents(WT) <- "original"  
+  WT <- SetIdent(WT, cells = all_neighbors, value = paste0("neighbors_cluster_", cluster_id))
+  WT <- SetIdent(WT, cells = setdiff(Cells(WT), all_neighbors), value = "other")
+  
+  # Step 4: Run FindMarkers for the current cluster's neighborhood
+  DE_results <- FindMarkers(WT, ident.1 = paste0("neighbors_cluster_", cluster_id),  ident.2 = "other", only.pos=T, assay = "Spatial")
+  
+  # Order DE results by avg_log2FC and store in the list
+  DE_results <- DE_results[order(DE_results$avg_log2FC, decreasing = TRUE), ]
+  cluster_DE_wt[[paste0("cluster_", cluster_id)]] <- DE_results
+}
+
+head(cluster_DE_wt[["cluster_1"]], n=10)
+length(rownames(cluster_DE_wt[["cluster_1"]]))
+
+saveRDS(cluster_DE_wt, paste0(dir.mic, "/cluster_DE_wt.RDS"))
+
+```
+
+```{r}
+neighbors_by_cluster <- list()
+
+for (cluster_id in 1:4) {
+  # Step 1: Identify spots in the current cluster
+  cluster_spots <- WhichCells(WT, expression = MAC_type_broad == cluster_id)
+  
+  target_coords <- coord_df %>% filter(spot %in% cluster_spots)
+  
+  # Step 2: Find neighbors for each spot in the current cluster
+  neighbors <- lapply(cluster_spots, find_neighbors, target_coords = target_coords, coord_df = coord_df, radius = radius)
+  names(neighbors) <- cluster_spots
+  
+  # Combine all neighborhood spots, excluding each original spot
+  all_neighbors <- unique(unlist(lapply(names(neighbors), function(spot) {
+    setdiff(neighbors[[spot]], spot)
+  })))
+  
+  neighbors_by_cluster[[paste0("cluster_", cluster_id)]] <- all_neighbors
+}
+
+head(neighbors_by_cluster[["cluster_1"]], n=10)
+length(neighbors_by_cluster[["cluster_4"]])
+
+saveRDS(neighbors_by_cluster, file = paste0(dir.mic, "/neighbors_by_cluster.rds"))
+```
+
+#Heatmap neighbors
+```{r}
+neighbors_by_cluster <- readRDS(file = paste0(dir.mic, "/neighbors_by_cluster.rds"))
+```
+
+#Heatmap neighbors data preparation
+```{r}
+top_n <- 8  
+
+# Initialize a list
+top_deg_list <- list()
+
+# Extract top DEGs for each cluster
+for (cluster_id in 1:4) {
+  cluster_key <- paste0("cluster_", cluster_id)
+  
+  if (!is.null(cluster_DE_wt[[cluster_key]]) && nrow(cluster_DE_wt[[cluster_key]]) > 0) {
+    # Extract the top DEGs based on avg_log2FC
+    top_deg_list[[cluster_key]] <- rownames(cluster_DE_wt[[cluster_key]][1:min(top_n, nrow(cluster_DE_wt[[cluster_key]])), ])
+  }
+}
+
+# Combine top DEGs from all clusters into a unique set
+all_top_genes <- unique(unlist(top_deg_list))
+
+# Retrieve normalized expression data from WT
+expression_data <- GetAssayData(WT, layer  = "data", assay = "Spatial")
+
+# Subset expression data for the top DEGs
+heatmap_expression <- expression_data[all_top_genes, , drop = FALSE]
+
+
+# Calculate average expression for each cluster neighborhood
+avg_expression <- sapply(1:4, function(cluster_id) {
+  cluster_neighbors <- neighbors_by_cluster[[paste0("cluster_", cluster_id)]]
+  
+  # Ensure valid neighbors
+  valid_neighbors <- cluster_neighbors[cluster_neighbors %in% colnames(heatmap_expression)]
+  
+  if (length(valid_neighbors) == 0) {
+    return(rep(NA, nrow(heatmap_expression)))  
+  }
+  
+  # Calculate rowMeans for valid neighbors
+  rowMeans(heatmap_expression[, valid_neighbors, drop = FALSE])
+})
+
+# Assign column names for clarity
+colnames(avg_expression) <- paste0("Cluster ", 1:4)
+
+head(avg_expression)
+
+# Scale the data (row-wise scaling)
+avg_expression_scaled <- t(scale(t(avg_expression)))
+```
+
+#Heatmap neighbors visualization
+```{r}
+# Prepare gene labels in italic
+italic_gene_labels <- paste0("italic('", rownames(avg_expression_scaled), "')")
+
+cols <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(101)
+
+# Plot the heatmap
+png(paste0(dir.mic, "/heatmap_top_DEG_neighbors.png"), width = 1700, height = 3000, res = 600)
+
+Heatmap(
+  avg_expression_scaled,
+  name = "Z-score",            
+  col = cols, 
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  row_labels = parse(text = italic_gene_labels),  
+  column_names_rot = 45
+)
+
+dev.off()
+
+```
+
+
+#Perform GSEA in neighbor DEGs and store as separate files
+```{r}
+perform_gsea <- function(cluster_DE_results, orgdb, num_clusters = 4, dataset_name = "default") {
+  
+  perform_gsea_for_cluster <- function(cluster_data, cluster_id) {
+    set.seed(123) 
+    
+    cluster_data$gene <- rownames(cluster_data)
+    rownames(cluster_data) <- NULL
+    
+    eg <- bitr(cluster_data$gene, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = orgdb)
+    eg <- subset(eg, !duplicated(eg$SYMBOL))
+    rownames(eg) <- eg$SYMBOL
+    eg$SYMBOL <- NULL
+  
+    diffexpgenes <- merge(cluster_data, eg, by.x = "gene", by.y = "row.names")
+    rownames(diffexpgenes) <- diffexpgenes$gene
+    diffexpgenes$gene <- NULL
+ 
+    fc <- diffexpgenes$avg_log2FC
+    names(fc) <- diffexpgenes$ENTREZID
+    fc <- sort(fc, decreasing = TRUE)
+    
+    gse <- gseGO(geneList = fc, ont = "BP", minGSSize = 5, maxGSSize = 800, OrgDb = orgdb, seed = 1)
+    
+    if (is.null(gse) || nrow(gse@result) == 0) {
+      message(paste("No significant GO terms for cluster", cluster_id, "in dataset", dataset_name))
+      return(NULL)
+    }
+    
+    csv_output <- file.path(dir.mg, paste0(dataset_name, "_gse_cluster_", cluster_id, ".csv"))
+    rds_output <- file.path(dir.mg, paste0(dataset_name, "_gse_cluster_", cluster_id, ".rds"))
+    
+    write.csv(gse@result, csv_output, row.names = FALSE)
+    saveRDS(gse, rds_output)
+    
+    message(paste("GSEA results saved for cluster", cluster_id, "in dataset", dataset_name, "at", csv_output, "and", rds_output))
+  }
+  
+  for (cluster_id in 1:num_clusters) {
+
+    cluster_key <- paste0("cluster_", cluster_id)
+    if (!cluster_key %in% names(cluster_DE_results)) {
+      message(paste("Cluster", cluster_id, "not found in cluster_DE_results for dataset", dataset_name))
+      next
+    }
+    
+    cluster_data <- cluster_DE_results[[cluster_key]]
+    
+    if (is.null(cluster_data) || nrow(cluster_data) == 0) {
+      message(paste("No DE genes available for cluster", cluster_id, "in dataset", dataset_name))
+      next
+    }
+    
+    perform_gsea_for_cluster(cluster_data, cluster_id)
+  }
+}
+
+perform_gsea(cluster_DE_wt, orgdb = org.Mm.eg.db, num_clusters = 4, dataset_name = "wt")
+```
+
+#use simplify on gseas
+```{r}
+simplified_gse_results_wt <- list()
+
+for (cluster_id in 1:4) {
+  gse_file <- file.path(dir.mg, paste0("wt_gse_cluster_", cluster_id, ".rds"))
+  
+  gse_cluster <- readRDS(gse_file)
+  
+  simplified <- clusterProfiler::simplify(
+    gse_cluster,
+    cutoff = 0.3,  
+    by = "p.adjust",
+    select_fun = min,
+    measure = "Wang"
+  )
+  
+  # Store in list
+  simplified_gse_results_wt[[paste0("cluster_", cluster_id)]] <- simplified
+}
+```
+
+#select unique top terms
+```{r}
+all_top_terms_wt <- c()
+
+for (cluster_id in 1:4) {
+  
+  cluster_results <- simplified_gse_results_wt[[paste0("cluster_", cluster_id)]]
+  
+  if (is.null(cluster_results)) {
+    message(paste("No results for cluster", cluster_id))
+    next
+  }
+  
+  significant_terms <- cluster_results@result %>%
+    filter(p.adjust < 0.05) %>%  
+    arrange(desc(abs(NES)))      
+  
+  # Extract the top terms based on NES
+  top_terms <- head(significant_terms$Description, 50)
+
+  # Append 
+  all_top_terms_wt <- c(all_top_terms_wt, top_terms)
+}
+
+# Create a list of unique terms across all clusters
+unique_top_terms_wt <- unique(all_top_terms_wt)
+
+message("Unique top terms across all clusters:")
+print(unique_top_terms_wt)
+```
+
+
+## Capitalize first letter
+```{r}
+capitalize_first <- function(string) {
+  paste0(toupper(substr(string, 1, 1)), substr(string, 2, nchar(string)))
+}
+```
+
+## process and plot the data
+#Comment: Big overlap between clusters
+```{r}
+generate_enrichment_plot <- function(unique_top_terms, simplified_gse_results, clusters, output_file, dataset_name) {
+  library(dplyr)
+  
+  unique_top_terms <- sapply(unique_top_terms, capitalize_first)
+  unique_top_terms <- unique(unique_top_terms)  
+
+  enrich_df_select_all <- data.frame()
+  
+  for (cluster_id in clusters) {
+    cluster_results <- simplified_gse_results[[paste0("cluster_", cluster_id)]]
+    
+    if (is.null(cluster_results)) {
+      next
+    }
+    
+    # Capitalize Description
+    cluster_results@result$Description <- sapply(cluster_results@result$Description, capitalize_first)
+    
+    # Filter for terms of interest
+    selected_results <- cluster_results@result %>%
+      filter(Description %in% unique_top_terms) %>%
+      mutate(
+        Condition = paste0("Cluster_", cluster_id),
+        Description_short = substr(Description, 1, 50)
+      )
+    
+    enrich_df_select_all <- bind_rows(enrich_df_select_all, selected_results)
+  }
+  
+  for (missing_term in setdiff(unique_top_terms, enrich_df_select_all$Description)) {
+    if (!is.na(missing_term)) {  
+      for (cluster_id in clusters) {
+        enrich_df_select_all <- bind_rows(enrich_df_select_all, data.frame(
+          Description = missing_term,
+          p.adjust = NA,
+          NES = NA,  
+          Condition = paste0("Cluster_", cluster_id),
+          Description_short = substr(missing_term, 1, 50),
+          stringsAsFactors = FALSE
+        ))
+      }
+    }
+  }
+  
+  # Remove rows with NA in Description
+  enrich_df_select_all <- enrich_df_select_all %>%
+    filter(!is.na(Description) & Description != "NA")
+  
+  # Explicitly remove NA from factor levels in Description_short
+  enrich_df_select_all$Description_short <- factor(enrich_df_select_all$Description_short)
+  enrich_df_select_all$Description_short <- droplevels(enrich_df_select_all$Description_short)
+  
+  # Replace underscores in cluster labels
+  enrich_df_select_all$Condition <- gsub("_", " ", enrich_df_select_all$Condition)
+  
+  # Ensure `Condition` is a factor
+  enrich_df_select_all$Condition <- factor(enrich_df_select_all$Condition, levels = paste("Cluster", clusters))
+  
+  # Plot the heatmap 
+  plot <- ggplot(enrich_df_select_all, aes(Condition, Description_short, fill = NES)) + 
+    geom_tile() +
+    scale_fill_gradientn(
+      name = "Enrichment", 
+      colors = rev(brewer.pal(n = 11, name = "RdYlBu")),
+      na.value = "grey90"
+    ) +
+    theme_classic() +
+    labs(y = "", x = "") +
+    theme(
+      panel.background = element_rect(fill = "grey", colour = "grey", linewidth = 0.5, linetype = "solid"),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+      axis.text.y = element_text(size = 12),
+      legend.position = "bottom"
+    )
+  
+  print(plot)
+  
+  ggsave(output_file, plot = plot, width = 6, height = 6, dpi = 600)
+}
+```
+
+
+# Generate the plot
+```{r}
+generate_enrichment_plot(
+  unique_top_terms = unique_top_terms_wt,
+  simplified_gse_results = simplified_gse_results_wt,
+  clusters = 1:4,
+  output_file = paste0(dir.mic, "/enrichGO_wt.png"),
+  dataset_name = "WT"
+)
+```
+
+
+
+# So instead identify distinguishing terms
+```{r}
+find_distinguishing_terms <- function(simplified_gse_results, clusters, p_cutoff = 0.05, top_n) {
+  library(dplyr)
+  
+  nes_data <- data.frame()
+  
+  for (cluster_id in clusters) {
+    cluster_results <- simplified_gse_results[[paste0("cluster_", cluster_id)]]
+    
+    if (is.null(cluster_results)) {
+      next
+    }
+    
+    # Filter for significant terms
+    significant_terms <- cluster_results@result %>%
+      filter(p.adjust < p_cutoff) %>%
+      dplyr::select(Description, NES) %>%
+      mutate(Cluster = paste0("Cluster_", cluster_id))
+    
+    nes_data <- bind_rows(nes_data, significant_terms)
+  }
+  
+  # Pivot NES data into a wide format
+  nes_wide <- nes_data %>%
+    pivot_wider(names_from = Cluster, values_from = NES, values_fill = NA)
+  
+  # Calculate standard deviation of NES across clusters
+  nes_wide <- nes_wide %>%
+    rowwise() %>%
+    mutate(NES_sd = sd(c_across(starts_with("Cluster_")), na.rm = TRUE)) %>%
+    ungroup()
+  
+  # Rank terms by variability and select the top N
+  top_distinguishing_terms <- nes_wide %>%
+    arrange(desc(NES_sd)) %>%
+    slice_head(n = top_n)
+  
+  return(top_distinguishing_terms)
+}
+
+distinguishing_terms <- find_distinguishing_terms(
+  simplified_gse_results = simplified_gse_results_wt,
+  clusters = 0:8,
+  p_cutoff = 0.05,
+  top_n = 50
+)
+
+print(distinguishing_terms)
+
+```
+
+
+#plot distinguishing terms
+#comment: Terms still very similar despite simplify but better to differentiate between clusters.
+```{r}
+heatmap_data <- distinguishing_terms %>%
+  dplyr::select(-NES_sd) %>%  
+  pivot_longer(
+    cols = starts_with("Cluster_"),  
+    names_to = "Condition",
+    values_to = "NES"
+  ) %>%
+  mutate(
+    Description_short = substr(Description, 1, 50),  
+    Condition = gsub("_", " ", Condition)  
+  )
+
+heatmap_data$Condition <- factor(heatmap_data$Condition, levels = unique(heatmap_data$Condition))
+
+# Plot the heatmap
+plot <- ggplot(heatmap_data, aes(Condition, Description_short, fill = NES)) + 
+  geom_tile() +
+  scale_fill_gradientn(
+    name = "Enrichment", 
+    colors = rev(brewer.pal(n = 11, name = "RdYlBu")),
+    na.value = "grey90"
+  ) +
+  theme_classic() +
+  labs(y = "Distinguishing GO Terms", x = "Clusters") +
+  theme(
+    panel.background = element_rect(fill = "grey", colour = "grey", linewidth = 0.5, linetype = "solid"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.position = "bottom"
+  )
+
+# Print the plot
+print(plot)
+
+
+```
+
+##short list unique terms
+```{r}
+
+View(simplified_gse_results_wt$cluster_3@result)
+
+go_terms <- c(	
+"regulation of lymphocyte proliferation", 
+"regulation of T cell proliferation",
+"positive regulation of cytokine production",
+"proton motive force-driven ATP synthesis",
+"leukocyte chemotaxis"
+)
+
+```
+
+#plot shortlisted terms
+```{r}
+generate_enrichment_plot_manual <- function(go_terms, simplified_gse_results, clusters, output_file, dataset_name) {
+
+  go_terms <- sapply(go_terms, capitalize_first)
+  go_terms <- unique(go_terms)  
+
+  enrich_df_select_all <- data.frame()
+  
+  for (cluster_id in clusters) {
+    cluster_results <- simplified_gse_results[[paste0("cluster_", cluster_id)]]
+    
+    if (is.null(cluster_results)) {
+      next
+    }
+    
+    # Capitalize Description 
+    cluster_results@result$Description <- sapply(cluster_results@result$Description, capitalize_first)
+    
+    # Filter for manually provided GO
+    selected_results <- cluster_results@result %>%
+      filter(Description %in% go_terms) %>%
+      mutate(
+        Condition = paste0("Cluster_", cluster_id),
+        Description_short = substr(Description, 1, 50)  
+      )
+    
+    enrich_df_select_all <- bind_rows(enrich_df_select_all, selected_results)
+  }
+  
+  
+  for (missing_term in setdiff(go_terms, enrich_df_select_all$Description)) {
+    if (!is.na(missing_term)) {  
+      for (cluster_id in clusters) {
+        enrich_df_select_all <- bind_rows(enrich_df_select_all, data.frame(
+          Description = missing_term,
+          p.adjust = NA,
+          NES = NA,  
+          Condition = paste0("Cluster_", cluster_id),
+          Description_short = substr(missing_term, 1, 50),
+          stringsAsFactors = FALSE
+        ))
+      }
+    }
+  }
+  
+  enrich_df_select_all <- enrich_df_select_all %>%
+    filter(!is.na(Description) & Description != "NA")
+  
+  enrich_df_select_all$Description_short <- factor(enrich_df_select_all$Description_short)
+  enrich_df_select_all$Description_short <- droplevels(enrich_df_select_all$Description_short)
+  
+  # Replace underscores
+  enrich_df_select_all$Condition <- gsub("_", " ", enrich_df_select_all$Condition)
+  
+  enrich_df_select_all$Condition <- factor(enrich_df_select_all$Condition, levels = paste("Cluster", clusters))
+  
+  # Plot the heatmap 
+  plot <- ggplot(enrich_df_select_all, aes(Condition, Description_short, fill = NES)) + 
+    geom_tile() +
+    scale_fill_gradientn(
+      name = "NES", 
+      colors = rev(brewer.pal(n = 11, name = "RdYlBu")),
+      na.value = "grey90"
+    ) +
+    theme_classic() +
+    labs(y = "", x = "") +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+      axis.text.y = element_text(size = 12),
+      legend.position = "bottom"
+    )
+  
+  print(plot)
+  
+  ggsave(output_file, plot = plot, width = 5, height = 2.4, dpi = 600)
+}
+
+
+#panel.background = element_rect(fill = "white", colour = "grey", linewidth = 0.5, linetype = "solid"),
+```
+
+```{r}
+generate_enrichment_plot_manual(
+  go_terms = go_terms,
+  simplified_gse_results = simplified_gse_results_wt,
+  clusters = 1:4,
+  output_file = paste0(dir.mic, "/manual_enrichment_heatmap.png"),
+  dataset_name = "WT"
+)
+```
+
+
+
+
+#BuildNicheAssay quantifies neighboring cells as identified by clusters.
+```{r}
+table(WT@meta.data$MAC_type_broad, useNA="ifany")
+
+Idents(WT) <- "first_type"
+
+WT_filtered <- subset(WT, cells = colnames(WT)[!is.na(WT$first_type)])
+
+WT_niche <- BuildNicheAssay(
+  object = WT_filtered,
+  fov= "slice1",
+  assay = "Niche",
+  neighbors.k = 30,
+  niches.k = 4,
+  group.by = "first_type"
+)
+
+# Fetch enrichment data 
+niche_data <- GetAssayData(WT_niche, assay = "Niche", layer = "data")
+
+dim(niche_data)  
+head(niche_data)
+
+# Fetch metadata 
+meta_data <- WT_niche@meta.data
+spot_types <- meta_data$first_type  
+
+
+valid_spots <- !is.na(spot_types)
+niche_data <- niche_data[, valid_spots]  
+spot_types <- spot_types[valid_spots]   
+
+dim(niche_data)
+table(spot_types)
+
+# Calculate mean enrichment scores 
+niche_by_type <- sapply(unique(spot_types), function(type) {
+  spots_of_type <- which(spot_types == type)  
+  rowMeans(niche_data[, spots_of_type, drop = FALSE])  
+})
+
+niche_by_type <- as.matrix(niche_by_type)
+
+# Assign row and column names
+rownames(niche_by_type) <- rownames(niche_data)  
+colnames(niche_by_type) <- unique(spot_types)    
+
+head(niche_by_type)
+
+niche_by_type_scaled <- t(scale(t(niche_by_type)))
+
+# Check scaled matrix
+head(niche_by_type_scaled)
+
+
+# Define the desired order 
+cell_type_order <- rownames(niche_by_type_scaled)  
+
+# Reorder 
+niche_by_type_ordered <- niche_by_type_scaled[cell_type_order, cell_type_order]
+
+output_file <- "Results/Microenvironment/niche_enrichment_heatmap.png"
+
+cols <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(101)
+
+png(filename = output_file, width = 2000, height = 1800, res = 600)
+
+# Important! Row is the central cell type, col is enriched type! So mac enriched around lym
+
+Heatmap(
+  niche_by_type_ordered,
+  name="Z-score",
+  cluster_rows  = FALSE,
+  cluster_columns  = FALSE,
+  col  = cols
+)
+
+dev.off()
+
+```
+
+```{r}
+#create enrichment of cell types heatmap
+
+set.seed(123)  # ensure determinism
+
+safe_scale_row <- function(v) {
+  m <- mean(v, na.rm = TRUE); s <- sd(v, na.rm = TRUE)
+  if (!is.finite(s) || s == 0) return(rep(0, length(v)))
+  (v - m) / s
+}
+
+k <- 15
+
+# 1) Build Niche assay
+Mac_niche <- BuildNicheAssay(
+  object      = WT_filtered,
+  fov         = "slice1",
+  assay       = "Niche",
+  neighbors.k = k,
+  niches.k    = 4,
+  group.by    = "first_type"
+)
+
+# 2) Matrix & metadata
+niche_data <- GetAssayData(Mac_niche, assay = "Niche", layer = "data")
+spot_types <- Mac_niche@meta.data$MAC_type_broad
+
+# 3) Keep valid MAC spots
+valid_spots <- !is.na(spot_types)
+niche_data  <- niche_data[, valid_spots, drop = FALSE]
+spot_types  <- spot_types[valid_spots]
+
+# 4) Aggregate by central MAC type
+mac_levels <- unique(spot_types)
+niche_by_first_around_mac <- sapply(mac_levels, function(mac) {
+  cols_idx <- which(spot_types == mac)
+  rowMeans(niche_data[, cols_idx, drop = FALSE])
+})
+niche_by_first_around_mac <- as.matrix(niche_by_first_around_mac)
+rownames(niche_by_first_around_mac) <- rownames(niche_data)
+colnames(niche_by_first_around_mac) <- mac_levels
+
+# 5) Drop zero-variance rows (match loop), then safe z-score
+row_sd <- apply(niche_by_first_around_mac, 1, sd, na.rm = TRUE)
+keep_rows <- is.finite(row_sd) & row_sd > 0
+niche_var <- niche_by_first_around_mac[keep_rows, , drop = FALSE]
+
+niche_scaled <- t(apply(niche_var, 1, safe_scale_row))
+niche_scaled[!is.finite(niche_scaled)] <- 0
+
+desired_cols <- as.character(1:4)
+col_order <- intersect(desired_cols, colnames(niche_scaled))
+niche_scaled <- niche_scaled[, col_order, drop = FALSE]
+
+# Map from original names -> display labels
+lab_map <- setNames(paste("Cluster", desired_cols), desired_cols)
+display_labels <- lab_map[colnames(niche_scaled)]
+
+
+# 8) Plot (same options as loop)
+output_file <- "Results/Microenvironment/niche_enrichment_celltypes_around_MACtypes_k15.png"
+dir.create(dirname(output_file), showWarnings = FALSE, recursive = TRUE)
+png(filename = output_file, width = 1700, height = 1700, res = 600)
+
+Heatmap(
+  niche_scaled,
+  name = "Z-score",
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  col = cols,
+  column_names_rot = 45,
+  na_col = "grey90",
+  heatmap_legend_param = list(at = c(-2, -1, 0, 1, 2)),
+  column_labels = display_labels
+)
+
+dev.off()
+
+```
+
+
+

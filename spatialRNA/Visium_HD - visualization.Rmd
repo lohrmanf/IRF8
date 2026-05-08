@@ -1,0 +1,503 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-08-03"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(hdf5r)
+library(arrow)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(RColorBrewer)
+library(presto)
+
+dir.s <- "Setup"
+dir.r <- "Results"
+dir.m <- "Results/Mac_clusters"
+dir.f <- "Results/Feature_plots"
+
+WT <- readRDS(file.path(dir.s, "WT.spatial_annotated.rds"))
+#WT_spata <- readRDS(file.path(dir.s, "WT_spata_annotated.rds"))
+
+
+WT@meta.data$cell_type <- factor(WT@meta.data$first_type)
+
+# Verify the new column
+table(WT@meta.data$cell_type)
+
+Idents(WT) <- WT@meta.data$cell_type
+
+colors.mac <- c(
+  "1" = "#E76F51",
+  "2" = "#E9C46A",
+  "3" = "#36BA98",
+  "4" = "#03396c"
+)
+```
+
+
+```{r setup, include=FALSE}
+
+new_metadata <- as.character(WT@meta.data$MAC_type_filtered)
+
+# 3. Assign the names of the new metadata vector to be the Seurat cell names.
+names(new_metadata) <- rownames(WT@meta.data)
+
+# Optionally check the head to verify the names are now cell barcodes:
+head(new_metadata)
+
+# 4. Add the new metadata column to the Seurat object with AddMetaData()
+WT <- AddMetaData(WT, metadata = new_metadata, col.name = "MAC_type_broad")
+
+# Verify that the column was correctly added:
+table(WT$MAC_type_broad)
+
+```
+
+#named colors for first_type
+```{r}
+levels <- c("FB", "CHFB", "PVC", "KRT", "LEC", "APC-MAC", "LYM", "NEU", "SCH", "VEC", "NA")
+
+all_colors <- c("orange", "#1F78B4", "pink", "#66A61E", "#005F6A",
+                "brown", "#666666", "#A6761D", "yellow", "#6A3D9A", "#BDBDBD")
+
+colors.celltype <- setNames(all_colors, levels)
+```
+
+#add hires image
+```{r}
+WT@images[["slice1"]] <- Read10X_Image(
+  image.dir = "Q:/IFI-F-AG-Henneke-Forschung/Mitarbeiter/Florens/visium_HD/re-run/Spaceranger/WT2-auto/outs/binned_outputs/square_008um/Spatial/", image.name = "tissue_hires_image.png")
+```
+
+#explore some qc
+```{r}
+p<- VlnPlot(WT, features = c("nCount_Spatial", "nFeature_Spatial"), pt.size=0)
+
+p<- VlnPlot(WT, features = "nFeature_Spatial", pt.size=0)
+p + coord_cartesian(ylim = c(100, 500))
+
+p2<- VlnPlot(WT, features = "nCount_Spatial", pt.size=0)
+p2 + coord_cartesian(ylim = c(100, 500))
+
+```
+
+#DimPlot
+```{r}
+valid_cells <- rownames(WT@meta.data[!is.na(WT@meta.data$cell_type), ])
+WT_sub <- subset(WT, cells = valid_cells)
+
+DimPlot(WT_sub, group.by = "cell_type", label = F, raster=F, cols = colors.celltype, pt.size=0.02) +
+    ggplot2::theme_minimal() +
+    ggplot2::labs(color = "Cell type", 
+                  title = NULL, 
+                  x = "UMAP 1", 
+                  y = "UMAP 2") + 
+  guides(color = guide_legend(override.aes = list(size = 6))) 
+
+ggsave(paste0(dir.r, "/UMAP_cell_type_WT.png"), dpi=600, width=4, height=4)
+```
+
+#UMAP on mac
+```{r}
+# Subset for cell_type == "APC-MAC" and MAC_type present
+WT_APC_MAC <- subset(WT_sub, cells = rownames(WT_sub@meta.data[WT_sub@meta.data$cell_type == "APC-MAC" &!is.na(WT_sub@meta.data$MAC_type_broad), ]))                          
+
+# Re-run scaling, PCA, and UMAP
+WT_APC_MAC <- FindVariableFeatures(WT_APC_MAC, selection.method = "vst", nfeatures = 1000)
+
+#colnames(WT_APC_MAC@meta.data)
+#WT_APC_MAC <- ScaleData(WT_APC_MAC)
+WT_APC_MAC <- ScaleData(WT_APC_MAC, features = rownames(WT_APC_MAC))
+
+WT_APC_MAC <- RunPCA(WT_APC_MAC)
+
+WT_APC_MAC <- RunUMAP(WT_APC_MAC, dims = 1:3) 
+WT_APC_MAC <- RunTSNE(WT_APC_MAC, dims = 1:20)
+?RunTSNE
+#WT_APC_MAC <- FindNeighbors(WT_APC_MAC, reduction = "pca", dims = 1:30)
+
+#WT_APC_MAC <- FindClusters(WT_APC_MAC, cluster.name = "new_mac_cluster", resolution = 1.7)
+
+?RunUMAP
+
+# Plot
+DimPlot(WT_APC_MAC, group.by = "MAC_type_broad", reduction="tsne", label = TRUE, raster = F, pt.size = 0.5, cols = colors.mac) +
+  ggplot2::theme_minimal() +
+  ggplot2::labs(color = "Cluster", 
+                title = NULL, 
+                x = "UMAP 1", 
+                y = "UMAP 2") + 
+  guides(color = guide_legend(override.aes = list(size = 6)))
+
+VariableFeaturePlot(WT_APC_MAC)
+```
+
+#Findmarkers and do heatmap
+```{r}
+WT_APC_MAC <- SetIdent(WT_APC_MAC, value = "MAC_type_filtered")
+levels(Idents(WT_APC_MAC))
+
+
+
+markers <- FindAllMarkers(
+  WT_APC_MAC, only.pos=T)
+
+head(markers)
+
+
+
+table(WT_APC_MAC@meta.data$MAC_type)
+table(WT_APC_MAC@meta.data$MAC_type_filtered)
+
+significant_markers<- markers %>% 
+  filter(p_val_adj < 0.05)
+
+top_markers <- markers %>% 
+  filter(p_val_adj < 0.05) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = avg_log2FC, n = 10)
+
+genes_to_plot <- unique(top_markers$gene)
+
+# Generate a heatmap
+heatmap <- DoHeatmap(
+  object = WT_APC_MAC,
+  features = genes_to_plot,
+  group.by = "MAC_type_filtered",
+  size = 3 
+) +
+  scale_fill_gradientn(colors = c("blue", "white", "red")) +
+  scale_color_manual(values=colors.mac)+
+  labs(title = "Top DEGs by MAC_type")
+
+
+# Print the heatmap
+print(heatmap)
+
+
+
+```
+
+#Heatmap by cell_type
+```{r}
+WT <-  SetIdent(WT, value = "cell_type")
+markers <- FindAllMarkers(
+  WT, only.pos=T)
+
+head(markers)
+
+
+significant_markers<- markers %>% 
+  filter(p_val_adj < 0.05)
+
+top_markers <- markers %>% 
+  filter(p_val_adj < 0.05) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = avg_log2FC, n = 10)
+
+genes_to_plot <- unique(top_markers$gene)
+
+# Generate a heatmap
+heatmap <- DoHeatmap(
+  object = WT,
+  features = genes_to_plot,
+  group.by = "cell_type",
+  size = 3 
+) +
+  scale_fill_gradientn(colors = c("blue", "white", "red")) +
+  scale_color_manual(values=all_colors)+
+  labs(title = "Top DEGs by cell_type")
+
+
+# Print the heatmap
+print(heatmap)
+
+
+```
+
+#someQC:
+```{r}
+WT <-  SetIdent(WT, value = "cell_type")
+
+VlnPlot(WT, feature= c("nCount_Spatial", "nFeature_Spatial"))
+
+VlnPlot(WT_APC_MAC, feature= c("nCount_Spatial", "nFeature_Spatial"))
+
+VlnPlot(WT_APC_MAC, feature= c("Gdf15"))
+
+```
+
+
+#Histo Image: Mac in full size
+```{r}
+WT@meta.data$MAC_type_broad <- factor(
+    WT@meta.data$MAC_type_broad,
+    levels = as.character(c("1", "2", "3", "4"))
+)
+
+valid_cells <- rownames(WT@meta.data[!is.na(WT@meta.data$MAC_type_broad), ])
+
+WT_mac <- subset(WT, cells = valid_cells)
+
+table(WT_mac@meta.data$MAC_type_broad)
+length(WT_mac@meta.data$MAC_type_broad)
+
+Idents(WT_mac) <- WT_mac@meta.data$MAC_type_broad
+
+SpatialDimPlot(WT_mac, image.scale="hires", pt.size.factor = 10, cols=colors.mac)+  
+  labs(fill = "Macrophage \ncluster") 
+
+ggsave(paste0(dir.r, "/mac_types_histoplot.png"), dpi=600, width = 4, height = 4)
+
+```
+
+#any spots clusters and cell types in full size
+```{r}
+Idents(WT) <- WT@meta.data$orig.ident
+levels(WT)
+
+SpatialDimPlot(WT, 
+               image.scale = "hires", 
+               pt.size.factor = 10) +  
+  scale_fill_manual(name = "All spots", 
+                    values = c("s" = "cornflowerblue", "NA" = "grey"), 
+                    labels = c("s" = "Spots", "NA" = "Excluded"))
+
+ggsave(paste0(dir.r, "/all spots_histoplot.png"), dpi=600, width = 4, height = 4)
+
+
+
+
+Idents(WT_sub) <- WT_sub@meta.data$cell_type
+levels(WT_sub)
+SpatialDimPlot(WT_sub, image.scale="hires", pt.size.factor = 10, cols=colors.celltype)+  
+  labs(fill = "Cell type") 
+
+ggsave(paste0(dir.r, "/Cell types_histoplot.png"), dpi=600, width = 4, height = 4)
+
+
+```
+
+
+#crop image to display only a section
+```{r}
+#SpatialDimPlot(WT, crop=T, image.scale="hires", pt.size.factor = 0.1)
+
+Idents(WT) <- WT@meta.data$cell_type
+
+coord <- GetTissueCoordinates(WT, scale="hires")
+
+#for crop_small. Cave: Changing ratio distorts the image
+x_min <- 4600
+x_max <- 5400
+y_min <- 2600
+y_max <- 3400
+
+filtered_coord <- coord[coord$x >= x_min & coord$x <= x_max &
+                        coord$y >= y_min & coord$y <= y_max, ]
+
+subset_cells <- rownames(filtered_coord)
+
+# Subset 
+WT_crop_small <- subset(WT, cells = subset_cells)
+
+nona_cells <- subset_cells[!is.na(WT@meta.data[subset_cells, "cell_type"])]
+
+# Subset 
+WT_crop_small_nona <- subset(WT_crop_small, cells = nona_cells)
+
+p <- SpatialDimPlot(WT_crop_small_nona, image.scale = "hires", pt.size.factor = 18, cols = colors.celltype)
+p <- p + 
+  labs(fill = "Cell type") + 
+  guides(color = guide_legend(override.aes = list(size = 6)))  
+
+print(p)
+
+ggsave(paste0(dir.r, "/Dimplot_crop_small.png"), dpi=600, height=4, width=4)
+
+#for bigger crop
+coord <- GetTissueCoordinates(WT, scale="hires")
+
+summary(coord)
+
+x_min <- 3600
+x_max <- 5400
+y_min <- 2600
+y_max <- 4400
+
+filtered_coord <- coord[coord$x >= x_min & coord$x <= x_max &
+                        coord$y >= y_min & coord$y <= y_max, ]
+
+subset_cells <- rownames(filtered_coord)
+
+# Subset 
+WT_crop <- subset(WT, cells = subset_cells)
+
+nona_cells <- subset_cells[!is.na(WT@meta.data[subset_cells, "cell_type"])]
+
+# Subset 
+WT_crop_nona <- subset(WT_crop, cells = nona_cells)
+
+p <- SpatialDimPlot(WT_crop_nona, image.scale = "hires", pt.size.factor = 6, cols = colors.celltype)
+p <- p + 
+  labs(fill = "Cell type") + 
+  guides(color = guide_legend(override.aes = list(size = 6)))  
+
+print(p)
+
+ggsave(paste0(dir.r, "/Dimplot_crop.png"), dpi=600, height=4, width=5)
+```
+
+#display macs in cropped image
+```{r}
+WT@meta.data$MAC_type_broad <- factor(
+    WT@meta.data$MAC_type_broad,
+    levels = as.character(c("1", "2", "3", "4"))
+)
+
+valid_cells <- rownames(WT@meta.data[!is.na(WT@meta.data$MAC_type_broad), ])
+
+
+#macs on small crop
+WT_crop_small_mac <- subset(WT_crop_small, cells = valid_cells)
+
+table(WT_crop_small_mac@meta.data$MAC_type_broad)
+
+Idents(WT_crop_small_mac) <- WT_crop_small_mac@meta.data$MAC_type_broad
+
+SpatialDimPlot(WT_crop_small_mac, image.scale="hires", pt.size.factor = 24, cols=colors.mac)+  
+  labs(fill = "Macrophage \ncluster")+
+  guides(fill = guide_legend(override.aes = list(size = 8)))
+
+ggsave(paste0(dir.r, "/mac_types_crop_small_histoplot.png"), dpi=600, width = 5, height = 4)
+
+
+#macs on bigger crop
+WT_crop_mac <- subset(WT_crop, cells = valid_cells)
+
+table(WT_crop_mac@meta.data$MAC_type_broad)
+
+Idents(WT_crop_mac) <- WT_crop_mac@meta.data$MAC_type_broad
+
+SpatialDimPlot(WT_crop_mac, image.scale="hires", pt.size.factor=20, cols=colors.mac) +
+  labs(fill="Macrophage \ncluster") +
+  guides(fill = guide_legend(override.aes = list(size = 4)))
+
+
+ggsave(paste0(dir.r, "/mac_types_crop_histoplot.png"), dpi=600, width = 5, height = 4)
+
+```
+
+#visualize distance to border or hairbulb in crop
+```{r}
+p <- SpatialFeaturePlot(WT_crop_small,
+                        images = "slice1",
+                   image.scale = "hires", 
+                   image.alpha = 1,
+  features = "distance_to_border_um",  
+  pt.size.factor = 24,  
+  crop = TRUE  
+)
+
+p <- p + labs(fill = "Distance to border (µm)", title= "")
+
+print(p)
+
+ggsave(paste0(dir.r, "/distance_border_crop_histoplot.png"), dpi=600, width = 4, height = 4)
+
+p <- SpatialFeaturePlot(WT_crop_small,
+                        images = "slice1",
+                   image.scale = "hires", 
+                   image.alpha = 1,
+  features = "distance_to_hb_um",  
+  pt.size.factor = 24,  
+  crop = TRUE  
+)
+
+p <- p + labs(fill = "Distance to hair bulb (µm)", title= "")
+
+print(p)
+
+ggsave(paste0(dir.r, "/distance_hairbulb_crop_histoplot.png"), dpi=600, width = 4, height = 4)
+
+```
+
+#Visualize FeaturePlots
+```{r}
+#interesting genes
+feature_genes <- c("H2-Ab1", "Cxcl14", "Ccl8", "Csf2ra", "Cd44", "Ctsl", "Cd74", "Ctsk", "Itgam", "Lyve1", "Csf1r", "Il1b", "Ccl4", "Gdf15", "Maf", "Fos", "Jun", "Ccr2")
+
+
+SpatialFeaturePlot(WT_crop, 
+                   images = "slice1",
+                   features = "H2-Ab1", 
+                   image.scale = "hires", 
+                   image.alpha = 1,
+                   pt.size.factor = 6,
+                   alpha = 1,
+                   shape = 21,
+                   crop = TRUE)+
+  scale_fill_gradientn(colors = c("darkgreen", "yellowgreen", "yellow"), na.value = "transparent") +
+  guides(fill = guide_colorbar(title = expression(italic("H2-Ab1")))) +
+  theme(legend.position = "right")
+
+ggsave(paste0(dir.f, "/Featureplot_crop_H2Ab1.png"), dpi=600, width = 4, height = 4)
+```
+
+
+```{r}
+plot_features <- function(seurat_obj, features, image_name = "slice1") {
+  
+  for (feature in features) {
+    # Generate the plot
+    p <- SpatialFeaturePlot(
+      seurat_obj, 
+      images = image_name,
+      features = feature, 
+      image.scale = "hires", 
+      image.alpha = 1,
+      pt.size.factor = 20,
+      alpha = 1,
+      shape = 21,
+      crop = TRUE
+    ) +
+      scale_fill_gradientn(colors = c("darkgreen", "yellowgreen", "yellow"), na.value = "transparent") +
+      guides(fill = guide_colorbar(title = bquote(italic(.(feature))))) +  
+      theme(legend.position = "right")
+    
+    # Save 
+    file_name <- paste0(dir.f, "/Featureplot_crop_small_", feature, ".png")
+    ggsave(file_name, plot = p, dpi = 600, width = 4, height = 4)
+    
+    message("Saved plot for feature: ", feature, " to ", file_name)
+  }
+}
+
+plot_features(
+  seurat_obj = WT_crop_small,
+  features = feature_genes
+)
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,5 +1,5 @@
 ---
-title: "Untitled"
+title: "Visualization"
 output: html_document
 date: '2022-11-24'
 editor_options: 
@@ -13,29 +13,42 @@ library(viridis)
 library(RColorBrewer)
 library(tidyverse)
 library(patchwork)
-library(hrbrthemes)
 library(Nebulosa)
-library(ggpubr)
-library(cowplot)
-library(DESeq2)
 library(ComplexHeatmap)
+library(grid)
 
 dir <- "Results/visualization"
 dir.n <- "Results/visualization/Nebulosa"
-dir.v <- "Results/visualization/Violins"
 
-mac <- readRDS("Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Results/mac_filter_merge.RDS")
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir.n, recursive = TRUE, showWarnings = FALSE)
+
+mac <- readRDS("Results/mac_filter_merge.RDS")
 
 
 DefaultAssay(mac) <- "RNA"
 mac<- NormalizeData(mac, normalization.method = "LogNormalize")
 
+mac$new_clusters <- factor(mac$new_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
 Idents(mac) <- "new_clusters"
 
-
 mac.wt <- subset(x=mac,subset=Experiment2=="WT")
-mac.irf <- subset(x=mac,subset=Experiment2=="IRF8ko")
+DefaultAssay(mac.wt) <- "RNA"
 
+mac.irf <- subset(x=mac,subset=Experiment2=="IRF8ko")
+DefaultAssay(mac.irf) <- "RNA"
+
+mac.wt$new_clusters <- factor(mac.wt$new_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac.wt) <- mac.wt$new_clusters
+
+mac.irf$new_clusters <- factor(mac.irf$new_clusters, 
+                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
+
+Idents(mac.irf) <- mac.irf$new_clusters
 
 
 colors <- c(
@@ -59,7 +72,6 @@ colors.rev <- c(
    )
 
 #color code:
-
 #E76F51   rgb(231, 111, 81)
 #E9C46A   rgb(233, 196, 106)
 #36BA98   rgb(54, 186, 152)
@@ -67,16 +79,6 @@ colors.rev <- c(
 #005b96 	rgb(0,91,150)
 #6497b1 	rgb(100,151,177)
 #b3cde0 	rgb(179,205,224)
-
-#previous_colors <- c(
- # "1" = "#8AB6F9",
-  #"2" = "#ffc13b",
-  #"3" = "#04d4f0",
-  #"4" = "#5c3c92",
-  #"5" = "#077b8a",
-  #"6" = "#d72631",
-  #"7" = "#80c904")
-
 ```
 
 
@@ -112,7 +114,7 @@ umap_coords$cluster <- mac$new_clusters
 umap_coords$Experiment2 <- mac$Experiment2
 
 
-# Compute the median center (or any other appropriate summary) for each cluster within each facet
+# Compute the median center for each cluster within each facet
 cluster_centers <- umap_coords %>%
   group_by(Experiment2, cluster) %>%
   summarize(UMAP_1 = median(UMAP_1), 
@@ -139,20 +141,15 @@ ggsave(paste0(dir,"/Clusters.png"), height=5, width=10, dpi=600)
 ```
 
 ```{r}
-Cluster.Distribution <- as.data.frame.matrix(prop.table(table(Idents(mac), mac$orig.ident), margin=2))
-Cluster.Distribution <- round(Cluster.Distribution, 4)
-write.xlsx(Cluster.Distribution, "Results/cl_prop_splitbyorigident.xlsx", rowNames=TRUE)
-```
-
-```{r}
-genes_list <- c(
-  "Cd9", "Pdgfb", "Cx3cr1", 
-  "Gpnmb", "Abcg1", "Ly6c2", "Thbs1",  
-  "Ctsk", "Cd109", 
-  "Csf1r",  "Fos", "Maf", "Jun",
-  "Csf2rb", "Cd74", "Lyz1",
-  "Il1a", "Cxcl1", "Ccl4", 
-  "Gdf15", "Mat2a")
+gene_list <- c(
+    "Gpnmb", "Abcg1", "Ly6c2", "Thbs1",  #1
+  "Csf2rb", "Cd74", "Lyz1", #2
+  "Cd9", "Pdgfb", "Cx3cr1", #3
+  "Gdf15", "Mat2a", #4H
+  "Il1a", "Cxcl1", "Ccl4", #4I
+  "Ctsk", "Cd109", #4C
+  "Csf1r",  "Fos", "Maf", "Jun" #4R
+  )
 ```
 
 ```{r}
@@ -189,68 +186,28 @@ Nebulosa_plots <- function(mac, gene_list) {
   }
 }
 
-
-
 Nebulosa_plots(mac, gene_list)
-
 ```
 
 ```{r}
-create_violin_plots <- function(seurat_object, gene_list, condition_column, subset_clusters = NULL, colors = NULL) {
-  
-  # Filter the Seurat object by specified clusters if subset is defined
-  if (!is.null(subset_clusters)) {
-    seurat_object <- subset(seurat_object, idents = subset_clusters)
-  }
-  
-  # Loop through each gene
+#only one plot
+
+Nebulosa_plots_single <- function(mac, gene_list, condition = "WT") {
+  mac_cond <- subset(mac, Experiment2 == condition)
+  if (ncol(mac_cond) == 0) stop("No cells for condition: ", condition)
+
   for (gene in gene_list) {
-    # Check if gene is in the Seurat object
-    if (gene %in% rownames(seurat_object)) {
-      # Create the violin plot
-      p <- VlnPlot(
-        object = seurat_object, 
-        features = gene, 
-        group.by = condition_column, 
-        split.by = "new_clusters", 
-        pt.size = 0, # Remove data points
-        combine = TRUE
-      ) +
-        ggtitle(bquote("Scaled" ~ italic(.(gene)) ~ "expression")) +  # Italicize gene name with bquote
-        theme_minimal() +
-        scale_x_discrete(
-          labels = c("WT", expression(italic("Irf8") ^ "-/-"))
-        )
-      
-      # If colors are provided, set the colors
-      if (!is.null(colors)) {
-        p <- p + scale_fill_manual(values = colors)
-      }
-      
-      # Save the plot to a file
-      ggsave(filename = paste0(dir.v, "/", gene, "_violin_plot.png"), plot = p, width = 4, height = 2.6)
-    } else {
-      # Print a message if the gene is not found
-      message(paste("Gene", gene, "not found in Seurat object. Skipping."))
-    }
+    p <- plot_density(mac_cond, features = gene, reduction = "umap", size = 0.7) +
+      ggtitle(paste0(condition, " - ", gene)) 
+    ggsave(file.path(dir.n, paste0(gene, "_Nebulosa_", condition, ".png")),
+           plot = p, dpi = 600, height = 3, width = 3)
   }
-  
-  message("Violin plots created for all genes.")
 }
 
 
-
-create_violin_plots(
-  seurat_object = mac, 
-  gene_list = gene_list, 
-  condition_column = "Experiment2", 
-  subset_clusters = c("1", "2", "3", "4H", "4I", "4C", "4R"), 
-  colors = colors             
-)
-
-
-
+Nebulosa_plots_single(mac, gene_list)
 ```
+
 
 ```{r}
 mac@meta.data$Experiment3[(mac@meta.data$orig.ident)=="mac-wt"] <- "WT 1-3"
@@ -263,6 +220,8 @@ mac@meta.data$Experiment3[(mac@meta.data$orig.ident)=="I-S2"] <- "IRF 5"
 mac@meta.data$Experiment3[(mac@meta.data$orig.ident)=="I-S3"] <- "IRF 6"
 
 mac$Experiment3 <- factor(x = mac$Experiment3, levels = c("WT 1-3", "WT 4", "WT 5", "WT 6","IRF 1-3", "IRF 4", "IRF 5", "IRF 6"))
+
+table(mac$Experiment3, useNA="ifany")
 
 plot2 <- DimPlot(mac, reduction = "umap", order=F, split.by="Experiment3", group.by="new_clusters", raster=F, label = T, label.size=5, repel = F, pt.size=1, cols=colors) + 
   scale_x_continuous(name="UMAP 1", breaks=seq(-5,5,5)) +
@@ -287,7 +246,7 @@ pseudo_mac <- AggregateExpression(
   group.by = "orig.ident" # Use 'orig.ident' as grouping factor
 )
 
-pseudo_mac
+DefaultAssay(pseudo_mac) <- "RNA"
 
 # Add the condition information to the pseudobulk object
 pseudo_mac$condition <- ifelse(
@@ -295,9 +254,15 @@ pseudo_mac$condition <- ifelse(
   ifelse(pseudo_mac$orig.ident %in% c("mac-wt") | grepl("^N-", pseudo_mac$orig.ident), "WT", NA)
 )
 
+pseudo_mac$condition <- factor(pseudo_mac$condition, levels = c("WT", "Irf8"))
 Idents(pseudo_mac) <- "condition"
 
-table(pseudo_mac@meta.data$condition)
+#no NAs?
+table(pseudo_mac@meta.data$condition, useNA="ifany")
+
+#Values integer?
+stopifnot(all(GetAssayData(pseudo_mac, layer="counts")@x %% 1 == 0))
+
 
 pseudo_bulk_de <- FindMarkers(
   object = pseudo_mac,
@@ -306,30 +271,25 @@ pseudo_bulk_de <- FindMarkers(
   test.use = "DESeq2"
 )
 
-head(pseudo_bulk_de)
+pseudo_bulk_de$gene <- rownames(pseudo_bulk_de)
 
-#remove rows with NA (834 rows)
-sum(is.na(pseudo_bulk_de$p_val_adj))
-pseudo_bulk_de_clean <- na.omit(pseudo_bulk_de)
-sum(is.na(pseudo_bulk_de_clean))
+significant_genes <- pseudo_bulk_de[!is.na(pseudo_bulk_de$p_val_adj) & pseudo_bulk_de$p_val_adj < 0.05, ]
 
-significant_genes <- pseudo_bulk_de_clean[pseudo_bulk_de_clean$p_val_adj < 0.05, ]
+#save sig genes
+out_sig <- file.path(dir, "Supp_table_2_DESeq2_pseudobulk_IRF8ko_vs_WT_sig.csv")
 
-head(significant_genes, n = 15)
+write.csv(significant_genes, out_sig, row.names = FALSE)
 
-# Save significant results to a file
-write.csv(significant_genes, file = "Results/significant_pseudobulk_DE_Irf8_vs_WT.csv")
 
 ###create heatmap
-
 #select genes
 selected_genes_man <- c("Irf8", "Ccr2", "Ly6c2", "Cxcr4", "H2-Eb1")
 
 selected_genes <- selected_genes_man[selected_genes_man %in% rownames(significant_genes)]
 
-pseudo_bulk_matrix <- GetAssayData(pseudo_mac, slot = "data")[selected_genes, ]
+pseudo_mac <- NormalizeData(pseudo_mac, normalization.method = "LogNormalize")
+pseudo_bulk_matrix <- GetAssayData(pseudo_mac, layer = "data")[selected_genes, ]
 
-# Ensure replicates are columns, and genes are rows
 pseudo_bulk_matrix <- as.matrix(pseudo_bulk_matrix)
 
 # Scale expression data for visualization
@@ -362,7 +322,7 @@ column_anno <- HeatmapAnnotation(
   show_annotation_name = FALSE
 )
 
-output_file <- "Results/pseudobulk_heatmap.png"
+output_file <- "Results/visualization/pseudobulk_heatmap.png"
 
 png(output_file, width = 400, height = 220) 
 
@@ -397,14 +357,6 @@ dev.off()
 ```
 
 ```{r}
-mac.wt <- subset(x=mac,subset=Experiment2=="WT")
-DefaultAssay(mac.wt) <- "RNA"
-mac.wt<- NormalizeData(mac.wt, normalization.method = "LogNormalize") 
-
-mac.irf <- subset(x=mac,subset=Experiment2=="IRF8ko")
-DefaultAssay(mac.irf) <- "RNA"
-mac.irf<- NormalizeData(mac.irf, normalization.method = "LogNormalize") 
-
 genes2 <- c(
   "Gpnmb", "Abcg1", "Ly6c2", "Thbs1",  #1
   "Csf2rb", "Cd74", "Lyz1", #2
@@ -415,41 +367,10 @@ genes2 <- c(
   "Csf1r",  "Fos", "Maf", "Jun" #4R
   )
 
-
-more_genes <- c("Pxdc1", "Abl2", "Hyal1", "Reps2", "Bcar3", "Plekhm1", "Bcl2l1", "C77080", 
-           "Cpeb2", "Naa80", "Gclc", "P2rx7", "Gdf15", "Ccl12", "Ccl8", "C4b", 
-           "Cd209d", "Ednrb", "Cd209a", "Ccl7", "Cd209b", "Pnp", "Fgl2", "Ccl2", 
-           "Il1a", "Cxcl1", "Csf3", "Timp1", "Cxcl3", "Il10", "Il1b", "Cxcl2", 
-           "Il1rn", "Nlrp3", "Phlda1", "Thbd", "Ccl4", "Ccl3", "Oasl1", "Ifi203", 
-           "Tnf", "Hbegf", "Tanc2", "Gm6377", "Plk3", "Ctsk", "Atp6v0d2", "Vasn", "Aqp1", "Actn1", "Lrp12", "Anpep", 
-               "Cd109", "Chp1", "Qpct", "Pira2", "Heatr5a", "Cnrip1", "Plau", 
-               "Slc27a1", "Pdgfa", "Cpeb4")
-
-surfacemarkers <- c("Lyve1", "Mertk", "Cd68","Cd209d", "Cd209a", "Clec10a", "Cd36", "Mrc1", "Cd209b", "Fcgrt", "Csf1r","Clec4a2", "Fcgr3", "Scarb2", "Fcgr2b", "Clec4a1", "Clec4n", "Clec4a3", "Clec2d", "Clec4d", "Clec4e", "Itgam", "Fcer1g", "Msr1", "Csf2rb2", "Ptprc", "Csf2rb", "Clec12a", "Cd74", "Ccr2")
-
-Zürich <- rev(c("Folr2", "Cd74", "Mrc1", "Flt3", "Axl", "Sirpa", "Cd4", "Itgam", "Cd44", "Fcgr1", "Fcgr2", "Fcgr3", "Cd274", "Ccr2", "Ly6c2", "C5ar1", "Cx3cr1", "Cd14", "Cd209a", "Adgre1", "Itgax", "Timd4", "Mgl2", "H2-Ab1"))
-
-Bulk <- c("Socs3", "Zmiz1", "Nfkb2", "Eps8", "Irf4", "Akap13", "Spred1", "Nr4a3", "Etv3", "Mki67")
-
-Zürich2 <- c("Ly6c2",  "H2-Ab1", "Cx3cr1", "Folr2", "Cd4")
+genes3 <- c("Ly6c2", "H2-Ab1", "Cx3cr1", "Folr2", "Cd4")
 ```
 
 ```{r}
-mac.wt$new_clusters <- factor(mac.wt$new_clusters, 
-                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
-
-Idents(mac.wt) <- mac.wt$new_clusters
-
-mac.irf$new_clusters <- factor(mac.irf$new_clusters, 
-                                levels = c("1", "2", "3", "4H", "4I", "4C", "4R"))
-
-Idents(mac.irf) <- mac.irf$new_clusters
-
-```
-
-
-```{r}
-#Cave genes are mixed up???
 generate_dotplot <- function(seurat_object, features, object_name) {
   # Convert feature names to italic expression
   features_italic <- lapply(features, function(x) bquote(italic(.(x))))
@@ -461,7 +382,7 @@ generate_dotplot <- function(seurat_object, features, object_name) {
     xlab('') +  
     ylab('Cluster') +
     RotatedAxis() +
-    scale_y_discrete(limits = rev) + 
+    scale_y_discrete(limits = rev(levels(Idents(seurat_object)))) + 
     scale_x_discrete(labels = features_italic) +  
     theme(axis.text.y = element_text(color = colors.rev, size = 14, face = "bold"),
           axis.title = element_text(size = 14),
@@ -481,21 +402,19 @@ generate_dotplot <- function(seurat_object, features, object_name) {
 
 generate_dotplot(mac.wt, genes2, "mac_wt")
 generate_dotplot(mac.irf, genes2, "mac_irf")
-
-
 ```
 
 ```{r}
-features_italic <- lapply(Zürich2, function(x) bquote(italic(.(x))))
+features_italic <- lapply(genes3, function(x) bquote(italic(.(x))))
 
 plot <- DotPlot(mac.wt, idents = c("1", "2", "3", "4H", "4I"), 
-                  features = Zürich2, scale = TRUE, cols = c("RdYlBu")) + 
+                  features = genes3, scale = TRUE, cols = c("RdYlBu")) + 
     geom_point(aes(size = pct.exp), shape = 21, colour = "black", stroke = 0.5) +
     guides(size = guide_legend(override.aes = list(shape = 21, colour = "black", fill = "white"), title = "Percent Expression")) +
     xlab('') +  
     ylab('Cluster') +
     RotatedAxis() +
-    scale_y_discrete(limits = rev) + 
+    scale_y_discrete(limits = rev(levels(Idents(seurat_object)))) + 
     scale_x_discrete(labels = features_italic) +  
     theme(axis.text.y = element_text(size = 14, face = "bold"),
           axis.title = element_text(size = 14),
@@ -508,8 +427,7 @@ plot <- DotPlot(mac.wt, idents = c("1", "2", "3", "4H", "4I"),
 
 plot
 
-ggsave(paste0(dir, "/Zürich_dotplot.png"), height = 3.5, width = 3.5, dpi=600)
-
+ggsave(paste0(dir, "/genes3_dotplot.png"), height = 3.5, width = 3.5, dpi=600)
 ```
 
 

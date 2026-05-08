@@ -22,6 +22,8 @@ library(openxlsx)
 
 dir <- "Results/gene set enrichment/WT"
 dir.g <- "Results/gene set enrichment/WT/gse_files"
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir.g, recursive = TRUE, showWarnings = FALSE)
 ```
 
 #initial setup
@@ -59,40 +61,27 @@ levels(Idents(mac.wt))
 ```
 
 
-```{r setup, include=FALSE}
-cl1.wt.markers <- FindMarkers(mac.wt, ident.1 = 1, min.pct = 0.25, logfc.threshold = 0.25)
+```{r}
+cl1.wt.markers <- FindMarkers(mac.wt, ident.1 = "1", min.pct = 0.25, logfc.threshold = 0.25)
+cl1.wt.markers <- cl1.wt.markers[cl1.wt.markers$p_val_adj < 0.05, , drop = FALSE]
 
-cl2.wt.markers <- FindMarkers(mac.wt, ident.1 = 2, min.pct = 0.25, logfc.threshold = 0.25)
+cl2.wt.markers <- FindMarkers(mac.wt, ident.1 = "2", min.pct = 0.25, logfc.threshold = 0.25)
+cl2.wt.markers <- cl2.wt.markers[cl2.wt.markers$p_val_adj < 0.05, , drop = FALSE]
 
-cl3.wt.markers <- FindMarkers(mac.wt, ident.1 = 3, min.pct = 0.25, logfc.threshold = 0.25)
+cl3.wt.markers <- FindMarkers(mac.wt, ident.1 = "3", min.pct = 0.25, logfc.threshold = 0.25)
+cl3.wt.markers <- cl3.wt.markers[cl3.wt.markers$p_val_adj < 0.05, , drop = FALSE]
 
 cl4H.wt.markers <- FindMarkers(mac.wt, ident.1 = "4H", min.pct = 0.25, logfc.threshold = 0.25)
+cl4H.wt.markers <- cl4H.wt.markers[cl4H.wt.markers$p_val_adj < 0.05, , drop = FALSE]
 
 cl4I.wt.markers <- FindMarkers(mac.wt, ident.1 = "4I", min.pct = 0.25, logfc.threshold = 0.25)
+cl4I.wt.markers <- cl4I.wt.markers[cl4I.wt.markers$p_val_adj < 0.05, , drop = FALSE]
 
 cl4C.wt.markers <- FindMarkers(mac.wt, ident.1 = "4C", min.pct = 0.25, logfc.threshold = 0.25)
+cl4C.wt.markers <- cl4C.wt.markers[cl4C.wt.markers$p_val_adj < 0.05, , drop = FALSE]
 
 cl4R.wt.markers <- FindMarkers(mac.wt, ident.1 = "4R", min.pct = 0.25, logfc.threshold = 0.25)
-
-saveRDS(cl1.wt.markers, paste0(dir,"/cl1.RDS"))
-saveRDS(cl2.wt.markers, paste0(dir,"/cl2.RDS"))
-saveRDS(cl3.wt.markers, paste0(dir,"/cl3.RDS"))
-saveRDS(cl4H.wt.markers, paste0(dir,"/cl4H.RDS"))
-saveRDS(cl4I.wt.markers, paste0(dir,"/cl4I.RDS"))
-saveRDS(cl4C.wt.markers, paste0(dir,"/cl4C.RDS"))
-saveRDS(cl4R.wt.markers, paste0(dir,"/cl4R.RDS"))
-```
-
-#load DEGs
-```{r}
-cl1.wt.markers <- readRDS("Results/gene set enrichment/WT/cl1.RDS")
-cl2.wt.markers <- readRDS("Results/gene set enrichment/WT/cl2.RDS")
-cl3.wt.markers <- readRDS("Results/gene set enrichment/WT/cl3.RDS")
-cl4H.wt.markers <- readRDS("Results/gene set enrichment/WT/cl4H.RDS")
-cl4I.wt.markers <- readRDS("Results/gene set enrichment/WT/cl4I.RDS")
-cl4C.wt.markers <- readRDS("Results/gene set enrichment/WT/cl4C.RDS")
-cl4R.wt.markers <- readRDS("Results/gene set enrichment/WT/cl4R.RDS")
-
+cl4R.wt.markers <- cl4R.wt.markers[cl4R.wt.markers$p_val_adj < 0.05, , drop = FALSE]
 ```
 
 
@@ -161,8 +150,6 @@ for (cl in clusters) {
     file = paste0(dir.g, "/gsea_cluster", cl, "_wt_simplified_sorted.csv")
   )
 }
-
-
 ```
 
 #combine all into one file
@@ -187,9 +174,6 @@ combined_results <- do.call(rbind, results[clusters])
 # Sort by Cluster and then by NES within each cluster
 combined_results <- combined_results[order(combined_results$Cluster, -combined_results$NES), ]
 
-selected_cols <- combined_results[, c("ID", "Description", "NES", "Cluster")]
-View(selected_cols)
-
 write.csv2(
   combined_results,
   file = paste0(dir.g, "/Supp_table_3_gsea_cluster_wt_sorted.csv"), row.names = F
@@ -203,8 +187,13 @@ write.xlsx(
 
 ```
 
-# Filter for manually selected GO terms
+# Filter for shortlisted GO terms
 ```{r}
+
+selected_cols <- combined_results[combined_results$NES > 0, c("ID", "Description", "NES", "Cluster")]
+
+View(selected_cols)
+
 selected_go_terms <- c(
  #1 
   "GO:0019882",
@@ -219,13 +208,13 @@ selected_go_terms <- c(
 "GO:0007159",
 
 #3
-"GO:0008347",
-"GO:0048870",
-"GO:0048856",
+"GO:0007154",
+"GO:0050789",
+"GO:0007165",
 
 #4H
 "GO:0048469", 	
-"GO:0071695", 
+"GO:0006029", 
 #4I
 "GO:0002237",
 "GO:0006954",
@@ -234,15 +223,16 @@ selected_go_terms <- c(
 #4C
 "GO:0001894",
 "GO:0045453",
-"GO:0050818",
+"GO:0060249",
 #4R
 "GO:0006119",
-"GO:0006958",
-"GO:0034440"
+"GO:0032543",
+"GO:0006635"
 )
- 
 
 selected_go_terms <- unique(selected_go_terms)
+
+missing_go <- setdiff(selected_go_terms, selected_cols$ID)
 ```
 
 #create heatmap
@@ -251,6 +241,9 @@ clusters <- c("1", "2", "3", "4H", "4I", "4C", "4R")
 
 # Filter results for selected GO terms
 filtered_results <- combined_results[combined_results$ID %in% selected_go_terms, ]
+
+missing <- setdiff(selected_go_terms, filtered_results$ID)
+if (length(missing) > 0) message("Missing GO terms: ", paste(missing, collapse = ", "))
 
 # Capitalize first letter of Description values
 capitalize_first_letter <- function(term) {
@@ -291,8 +284,6 @@ pheatmap(heatmap_data,
          fontsize = 10,
          labels_col = colnames(heatmap_data))
 dev.off()
-
-
 ```
 
 

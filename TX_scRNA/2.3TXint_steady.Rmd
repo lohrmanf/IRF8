@@ -20,10 +20,10 @@ library(RColorBrewer)
 library(viridis)
 library(SeuratDisk)
 
-mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
-
 dir <- "Results/2.3TX_Int_steady"
-dir.v <- "Results/Violins"
+
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+
 
 colors <- c(
   "1" = "#E76F51",
@@ -44,10 +44,7 @@ colors.rev <- c(
   "#E9C46A",
   "#E76F51"
    )
-
-future::plan(future::multicore, workers = 4) 
-options(future.globals.maxSize = 12000 * 1024^2)  
-
+ 
 
 ```
 
@@ -82,7 +79,7 @@ mac.TX <- merge(D4, y=c(D16, R4, R16), add.cell.ids = c("D4", "D16", "R4", "R16"
 mac.TX <- NormalizeData(mac.TX, normalization.method = "LogNormalize")
 ```
 
-###Approach 1:  reference mapping
+###Seurat reference mapping
 #load reference dataset, rerun RunUMAP and include return.model=T
 ```{r}
 mac <- readRDS("Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/scRNA/wt_irf/Results/2.3Int_all/all_data.RDS")
@@ -144,8 +141,6 @@ mac.wt[["SCT"]]@SCTModel.list <- mac.wt[["SCT"]]@SCTModel.list[1]
 
 DimPlot(mac.wt, reduction="umap")
 
-#DefaultAssay(mac.wt) <- "integrated"
-
 ```
 
 # reference mapping
@@ -170,35 +165,6 @@ mac.TX <- MapQuery(anchorset = anchors, reference = mac.wt, query = mac.TX,
 table(mac.TX$predicted.new_clusters)
 ```
 
-
-#ok looking: e.g. seed.use = 24
-
-
-#Test RunUMAP models with different seed.use
-```{r}
-# Open a PDF device to save the plots
-pdf("UMAP_Comparison.pdf")
-
-# Loop over seed values from 2 to 20
-for (seed in 21:40) {
-  # Run UMAP using the current seed
-  mac.TX <- RunUMAP(mac.TX, reduction = "ref.pca", dims = 1:30, seed.use = seed)
-  
-  # Create a DimPlot and add a title indicating the seed used
-  p <- DimPlot(mac.TX, 
-               reduction = "umap", 
-               order = FALSE, 
-               group.by = "predicted.new_clusters") +
-       ggtitle(paste("Seed:", seed))
-  
-  # Print the plot to the current PDF page
-  print(p)
-}
-
-# Close the PDF device
-dev.off()
-
-```
 
 ```{r}
 mac.TX <- RunUMAP(mac.TX, reduction = "ref.pca", dims = 1:30, seed.use = 24)
@@ -252,7 +218,15 @@ Idents(mac.TX) <- mac.TX$renamed_clusters
 #save object
 ```{r}
 
-SaveH5Seurat(mac.TX, filename = "mac_TX_integrated.h5Seurat")
+outfile <- "mac_TX_integrated.h5Seurat"
+
+if (file.exists(outfile)) {
+  file.remove(outfile)
+}
+
+SaveH5Seurat(mac.TX, filename = outfile)
+
+#check:
 mac.TX <- LoadH5Seurat("mac_TX_integrated.h5Seurat")
 ```
 

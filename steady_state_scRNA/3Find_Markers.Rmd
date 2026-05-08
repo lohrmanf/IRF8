@@ -14,6 +14,7 @@ library(RColorBrewer)
 library(ggplot2)
 
 dir <- "Results/3FindMarkers"
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
 
 mac <- readRDS("Results/mac_filter_merge.RDS")
 
@@ -79,9 +80,8 @@ write.xlsx(cluster.dis.abs.ind, paste0(dir,"/cl_mac_abs_ind.xlsx"), rowNames=TRU
 
 # FindMarkers
 ```{r}
-
 #Find markers for every cluster compared to all remaining cells
-wt.markers <- FindAllMarkers(mac.wt, only.pos = T, min.pct = 0.25, logfc.threshold = 0.25)
+wt.markers <- FindAllMarkers(mac.wt, only.pos = T, min.pct = 0.1, logfc.threshold = 0.25)
 wt.markers <- wt.markers[wt.markers$p_val_adj < p_value, ]
 wt.markers <- wt.markers %>%
   arrange(cluster, desc(avg_log2FC))
@@ -90,12 +90,11 @@ wt.markers.top <- wt.markers %>%
                             group_by(cluster) %>%
                             slice_max(n = 20, order_by = avg_log2FC)
 
-saveRDS(wt.markers, paste0(dir,"/wt.markers.RDS"))
 write.xlsx(wt.markers, paste0(dir,"/wt.markers.xlsx"))
 write.xlsx(wt.markers.top, paste0(dir,"/wt.markers.top.xlsx"))
 
 
-irf.markers <- FindAllMarkers(mac.irf, only.pos = T, min.pct = 0.25, logfc.threshold = 0.25)
+irf.markers <- FindAllMarkers(mac.irf, only.pos = T, min.pct = 0.1, logfc.threshold = 0.25)
 irf.markers <- irf.markers[irf.markers$p_val_adj < p_value, ]
 irf.markers <- irf.markers %>%
   arrange(cluster, desc(avg_log2FC))
@@ -104,7 +103,6 @@ irf.markers.top <- irf.markers %>%
                             group_by(cluster) %>%
                             slice_max(n = 20, order_by = avg_log2FC)
 
-saveRDS(irf.markers, paste0(dir,"/irf.markers.RDS"))
 write.xlsx(irf.markers, paste0(dir,"/irf.markers.xlsx"))
 write.xlsx(irf.markers.top, paste0(dir,"/irf.markers.top.xlsx"))
 
@@ -119,18 +117,36 @@ writeData(wb, sheet = "WT_Markers", wt.markers)
 writeData(wb, sheet = "IRF_Markers", irf.markers)
 
 # Save the workbook to a file
-saveWorkbook(wb, file = paste0(dir, "/Supp_table_1_markers_steady_state.xlsx"), overwrite = TRUE)
+saveWorkbook(wb, file = paste0(dir, "/Supp_table_1_sig_markers_steady_state.xlsx"), overwrite = TRUE)
+```
+
+#display the results for a list of genes
+```{r}
+marker_genes_wt <- c("Irf8", "Ctsk", "H2-Ab1")
+
+# WT
+wt_subset <- wt.markers %>%
+  dplyr::filter(gene %in% marker_genes_wt) %>%
+  dplyr::mutate(gene = factor(gene, levels = marker_genes_wt)) %>%
+  dplyr::arrange(gene, cluster, dplyr::desc(avg_log2FC))
+
+View(wt_subset)
+
+
+marker_genes_irf <- c("Irf8", "Ctsk", "H2-Ab1")
+
+# IRF8ko
+irf_subset <- irf.markers %>%
+  dplyr::filter(gene %in% marker_genes_irf) %>%
+  dplyr::mutate(gene = factor(gene, levels = marker_genes_irf)) %>%
+  dplyr::arrange(gene, cluster, dplyr::desc(avg_log2FC))
+
+View(irf_subset)
 ```
 
 
 ```{r}
-#heatmaps
-
-mac.wt<- ScaleData(mac.wt)
-DoHeatmap(mac.wt, features= wt.markers.top$gene, group.colors = colors)+ 
-  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n=11, name = "RdBu")))
-ggsave(paste0(dir,"/wt.top50.heatmap.png"), height=24, width=10, dpi=600)
-
+#heatmaps - for visualisation purpose, figures not included in manuscript
 wt.markers.10 <- wt.markers %>%
                             group_by(cluster) %>%
                             slice_max(n = 10, order_by = avg_log2FC)
@@ -138,51 +154,11 @@ DoHeatmap(mac.wt, features= wt.markers.10$gene, group.colors = colors)+
   scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n=11, name = "RdBu")))
 ggsave(paste0(dir,"/wt.top10.heatmap.png"), height=10, width=10, dpi=600)
 
-
-mac.irf<- ScaleData(mac.irf)
-DoHeatmap(mac.irf, features= irf.markers.top$gene, group.colors = colors)+   scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n=11, name = "RdBu")))
-ggsave(paste0(dir,"/irf.top50.heatmap.png"), height=24, width=10, dpi=600)
-
 irf.markers.10 <- irf.markers %>%
                             group_by(cluster) %>%
                             slice_max(n = 10, order_by = avg_log2FC)
 DoHeatmap(mac.irf, features= irf.markers.10$gene, group.colors = colors)+ 
   scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n=11, name = "RdBu")))
 ggsave(paste0(dir,"/irf.top10.heatmap.png"), height=10, width=10, dpi=600)
-
-
-
-
-TF_names <- readRDS("Q:/CCI-T-AG-Henneke/Mitarbeiter/Florens/publications/Dermal Mac - IRF8 - BCG/collaborations/Heidelberg/SCENIC/Objects/TF_names.RDS")
-DoHeatmap(mac.wt, features= TF_names, group.colors = colors)+ 
-  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n=11, name = "RdBu")))
-ggsave(paste0(dir,"/wt.TFnames.heatmap.png"), height=24, width=10, dpi=600)
-
-```
-
-
-```{r}
-#wt versus IRF8
-#mac
-mac$cluster.condition <- paste(Idents(mac), mac$Experiment2, sep = "_")
-Idents(mac) <- "cluster.condition"
-
-process_cluster <- function(mac, cluster_number, p_value, dir) {
-  ident_1 <- paste(cluster_number, "WT", sep = "_")
-  ident_2 <- paste(cluster_number, "IRF8ko", sep = "_")
-  markers <- FindMarkers(mac, ident.1 = ident_1, ident.2 = ident_2, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.5)
-  if (!"gene" %in% colnames(markers)) {
-    markers <- tibble(gene = rownames(markers), markers)
-  }
-  markers <- markers[markers$p_val_adj < p_value, ]
-  markers <- markers %>% arrange(cluster_number, desc(avg_log2FC))
-  file_name <- paste0(dir, "/cl", cluster_number, ".mac.wt_irf.xlsx")
-  write.xlsx(markers, file_name, col_names = TRUE)
-  return(markers)
-}
-
-for (i in 0:7) {
-  assign(paste0("cl", i), process_cluster(mac, i, p_value, dir))
-}
 ```
 

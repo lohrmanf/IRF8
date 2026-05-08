@@ -1,0 +1,196 @@
+---
+title: "Create_objects"
+output: html_document
+date: "2026-04-02"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2)
+library(openxlsx)
+library(dplyr)
+library(patchwork)
+library(glmGamPoi)
+dir <- "Results/1ReadinData"
+dir.i <- "Results/2_Integration"
+dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir.i, recursive = TRUE, showWarnings = FALSE)
+
+```
+
+```{r}
+base_path <- "Q:/IIK-F-AG-Henneke-Forschung/Mitarbeiter/Florens/scRNA/scRNA_wt_irf_bcg"
+
+read_sample <- function(sample_dir, short_id, library_id, outdir) {
+  sample_path <- file.path(
+    base_path,
+    library_id,
+    "outs",
+    "per_sample_outs",
+    sample_dir,
+    "count",
+    "sample_filtered_feature_bc_matrix"
+  )
+  
+  counts <- Read10X(data.dir = sample_path)
+  
+  obj <- CreateSeuratObject(
+    counts = counts$`Gene Expression`,
+    project = short_id,
+    min.cells = 3,
+    min.features = 200
+  )
+  
+  obj$sample <- short_id
+  obj$library <- library_id
+  
+  saveRDS(obj, file = file.path(outdir, paste0(short_id, ".RDS")))
+  
+  message(short_id, ": ", ncol(obj), " cells, ", nrow(obj), " genes")
+  
+  obj
+}
+
+sample_table <- data.frame(
+  sample_dir = c("sample1", "sample3", "sample7", "sample8", "sample9", "sample12",
+                 "sample4", "sample5", "sample6", "sample10", "sample11"),
+  short_id   = c("s1", "s3", "s7", "s8", "s9", "s12",
+                 "s4", "s5", "s6", "s10", "s11"),
+  library_id = c("Lib1", "Lib1", "Lib1", "Lib1", "Lib1", "Lib1",
+                 "Lib2", "Lib2", "Lib2", "Lib2", "Lib2"),
+  stringsAsFactors = FALSE
+)
+
+sample_objects <- setNames(
+  lapply(seq_len(nrow(sample_table)), function(i) {
+    read_sample(
+      sample_dir = sample_table$sample_dir[i],
+      short_id   = sample_table$short_id[i],
+      library_id = sample_table$library_id[i],
+      outdir     = dir
+    )
+  }),
+  sample_table$short_id
+)
+
+list2env(sample_objects, envir = .GlobalEnv)
+```
+
+```{r}
+sample_list <- list(
+  s1 = s1, s3 = s3, s4 = s4, s5 = s5, s6 = s6,
+  s7 = s7, s8 = s8, s9 = s9, s10 = s10, s11 = s11, s12 = s12
+)
+
+sample_list <- lapply(sample_list, function(obj) {
+  obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^mt-")
+  obj
+})
+
+mac <- merge(
+  x = sample_list[[1]],
+  y = sample_list[-1],
+  add.cell.ids = names(sample_list)
+)
+
+condition_map <- c(
+  s1 = "A", s3 = "A",
+  s4 = "B", s5 = "B", s6 = "B",
+  s7 = "C", s8 = "C", s9 = "C",
+  s10 = "D", s11 = "D", s12 = "D"
+)
+
+treatment_map <- c(A = "steady", B = "infected", C = "steady", D = "infected")
+genotype_map  <- c(A = "WT", B = "WT", C = "Irf8ko", D = "Irf8ko")
+
+mac$condition <- unname(condition_map[mac$orig.ident])
+mac$treatment <- unname(treatment_map[mac$condition])
+mac$genotype  <- unname(genotype_map[mac$condition])
+
+table(mac$genotype)
+```
+
+```{r}
+# QC filtering
+mac <- subset(
+  mac,
+  subset = percent.mt < 5 &
+    nFeature_RNA > 200 &
+    nFeature_RNA < 5000 &
+    nCount_RNA > 500
+)
+
+# Ensure counts are accessible as a single layer
+mac[["RNA"]] <- JoinLayers(mac[["RNA"]])
+
+counts_mat <- GetAssayData(mac, assay = "RNA", layer = "counts")
+
+# Remove likely neutrophil and T-cell contaminants
+keep_cells <- counts_mat["Ly6g", ] < 1 & counts_mat["Cd3e", ] < 1
+mac <- subset(mac, cells = colnames(mac)[keep_cells])
+
+# Remove predicted genes and ribosomal genes
+keep_genes <- !grepl("^(Gm\\d+|Rpl\\d+|Rps\\d+)", rownames(counts_mat))
+mac <- subset(mac, features = rownames(counts_mat)[keep_genes])
+```
+
+```{r}
+set.seed(123)
+
+mac <- NormalizeData(mac)
+mac <- FindVariableFeatures(mac, selection.method = "vst", nfeatures = 3000)
+mac <- ScaleData(mac, features = rownames(mac), vars.to.regress = "percent.mt")
+mac <- RunPCA(mac, features = VariableFeatures(mac))
+
+n_pcs <- 20
+mac <- RunUMAP(mac, dims = 1:n_pcs)
+mac <- FindNeighbors(mac, dims = 1:n_pcs)
+mac <- FindClusters(mac, resolution = 0.6)
+```
+
+
+```{r}
+saveRDS(mac, file = file.path("C:/Users/lohrmanf/Documents", "mac.RDS"))
+#saveRDS(mac, file = file.path(dir.i, "mac.RDS"))
+```
+
+```{r}
+p_umap <- DimPlot(mac, reduction = "umap", label = TRUE)
+p_umap_condition <- DimPlot(mac, reduction = "umap", split.by = "condition", label = TRUE, repel = FALSE)
+p_umap_sample <- DimPlot(mac, reduction = "umap", split.by = "orig.ident", label = TRUE, repel = FALSE)
+
+p_umap
+p_umap_condition
+p_umap_sample
+
+ggsave(
+  filename = file.path(dir.i, "mac_dim.png"),
+  plot = p_umap_condition,
+  height = 5,
+  width = 15
+)
+```
+
+```{r}
+cluster_distribution <- prop.table(table(Idents(mac), mac$orig.ident), margin = 2) |>
+  as.data.frame.matrix() |>
+  round(4)
+
+write.xlsx(
+  cluster_distribution,
+  file = file.path(dir.i, "mac.xlsx"),
+  rowNames = TRUE
+)
+
+cluster_numbers <- table(Idents(mac), mac$condition) |>
+  as.data.frame.matrix()
+
+write.xlsx(
+  cluster_numbers,
+  file = file.path(dir.i, "cluster_numbers.xlsx"),
+  rowNames = TRUE
+)
+```
+
